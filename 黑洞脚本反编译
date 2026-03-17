@@ -1,0 +1,185 @@
+-- ts file was generated at discord.gg/25ms
+
+local _Players = game:GetService('Players')
+local _RunService = game:GetService('RunService')
+local _LocalPlayer = _Players.LocalPlayer
+local _Workspace = game:GetService('Workspace')
+local u5 = 1
+local u6 = 10
+local u7 = false
+local u8 = 2
+
+local function u13()
+    local _HumanoidRootPart = (_LocalPlayer.Character or _LocalPlayer.CharacterAdded:Wait()):WaitForChild('HumanoidRootPart')
+    local _Folder = Instance.new('Folder', _Workspace)
+    local _Part = Instance.new('Part', _Folder)
+    local _Attachment = Instance.new('Attachment', _Part)
+
+    _Part.Anchored = true
+    _Part.CanCollide = false
+    _Part.Transparency = 1
+
+    return _HumanoidRootPart, _Attachment
+end
+
+local u14, u15 = u13()
+
+if not getgenv().Network then
+    getgenv().Network = {
+        BaseParts = {},
+        Velocity = Vector3.new(14.46262424, 14.46262424, 14.46262424),
+    }
+
+    function Network.RetainPart(p16)
+        if typeof(p16) == 'Instance' and (p16:IsA('BasePart') and p16:IsDescendantOf(_Workspace)) then
+            table.insert(Network.BaseParts, p16)
+
+            p16.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+            p16.CanCollide = false
+        end
+    end
+
+    (function()
+        _LocalPlayer.ReplicationFocus = _Workspace
+
+        _RunService.Heartbeat:Connect(function()
+            sethiddenproperty(_LocalPlayer, 'SimulationRadius', math.huge)
+
+            local v17, v18, v19 = pairs(Network.BaseParts)
+
+            while true do
+                local v20
+
+                v19, v20 = v17(v18, v19)
+
+                if v19 == nil then
+                    break
+                end
+                if v20:IsDescendantOf(_Workspace) then
+                    v20.Velocity = Network.Velocity
+                end
+            end
+        end)
+    end)()
+end
+
+local function u29(p21)
+    if p21:IsA('Part') and not p21.Anchored and (not p21.Parent:FindFirstChild('Humanoid') and (not p21.Parent:FindFirstChild('Head') and p21.Name ~= 'Handle')) then
+        local v22 = next
+        local v23, v24 = p21:GetChildren()
+
+        while true do
+            local v25
+
+            v24, v25 = v22(v23, v24)
+
+            if v24 == nil then
+                break
+            end
+            if v25:IsA('BodyAngularVelocity') or (v25:IsA('BodyForce') or (v25:IsA('BodyGyro') or (v25:IsA('BodyPosition') or (v25:IsA('BodyThrust') or (v25:IsA('BodyVelocity') or v25:IsA('RocketPropulsion')))))) then
+                v25:Destroy()
+            end
+        end
+
+        if p21:FindFirstChild('Attachment') then
+            p21:FindFirstChild('Attachment'):Destroy()
+        end
+        if p21:FindFirstChild('AlignPosition') then
+            p21:FindFirstChild('AlignPosition'):Destroy()
+        end
+        if p21:FindFirstChild('Torque') then
+            p21:FindFirstChild('Torque'):Destroy()
+        end
+
+        p21.CanCollide = false
+
+        local _Torque = Instance.new('Torque', p21)
+
+        _Torque.Torque = Vector3.new(1000000, 1000000, 1000000)
+
+        local _AlignPosition = Instance.new('AlignPosition', p21)
+        local _Attachment2 = Instance.new('Attachment', p21)
+
+        _Torque.Attachment0 = _Attachment2
+        _AlignPosition.MaxForce = math.huge
+        _AlignPosition.MaxVelocity = math.huge
+        _AlignPosition.Responsiveness = 500
+        _AlignPosition.Attachment0 = _Attachment2
+        _AlignPosition.Attachment1 = u15
+    end
+end
+local function u37()
+    u7 = not u7
+
+    if u7 then
+        local v30 = next
+        local v31, v32 = _Workspace:GetDescendants()
+
+        while true do
+            local v33
+
+            v32, v33 = v30(v31, v32)
+
+            if v32 == nil then
+                break
+            end
+
+            u29(v33)
+        end
+
+        _Workspace.DescendantAdded:Connect(function(p34)
+            if u7 then
+                u29(p34)
+            end
+        end)
+        spawn(function()
+            while u7 and _RunService.RenderStepped:Wait() do
+                u5 = u5 + math.rad(u8)
+
+                local v35 = math.cos(u5) * u6
+                local v36 = math.sin(u5) * u6
+
+                u15.WorldCFrame = u14.CFrame * CFrame.new(v35, 0, v36)
+            end
+        end)
+    else
+        u15.WorldCFrame = CFrame.new(0, -1000, 0)
+    end
+end
+
+_LocalPlayer.CharacterAdded:Connect(function()
+    local v38, v39 = u13()
+
+    u15 = v39
+    u14 = v38
+
+    if u7 then
+        u37()
+    end
+end)
+
+local _SypherHubNaturalDisasterSurvival = loadstring(game:HttpGet('https://raw.githubusercontent.com/miroeramaa/TurtleLib/main/TurtleUiLib.lua'))():Window('Sypher Hub | Natural Disaster Survival')
+
+_SypherHubNaturalDisasterSurvival:Slider('Radius Blackhole', 1, 100, 10, function(p41)
+    u6 = p41
+end)
+_SypherHubNaturalDisasterSurvival:Slider('Orbit Speed', 1, 10, 2, function(p42)
+    u8 = p42
+end)
+_SypherHubNaturalDisasterSurvival:Toggle('Blackhole', true, function(p43)
+    if p43 then
+        u37()
+    else
+        u7 = false
+    end
+end)
+spawn(function()
+    while true do
+        repeat
+            _RunService.RenderStepped:Wait()
+        until u7
+
+        u5 = u5 + math.rad(u8)
+    end
+end)
+u37()
