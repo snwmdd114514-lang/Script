@@ -6,7 +6,7 @@
     Repository-ready single-file library build.
     It uses the pinned previous AppleGUI commit as its immutable base,
     removes the EditableImage/screenshot liquid-glass system in memory,
-    adds configurable transparent/frosted surfaces, Slider API, GUI settings, theme/config support, improved dark mode, and functional search, then returns the library.
+    adds configurable transparent/frosted surfaces, Slider API, GUI settings, theme/config support, rounded shadow clipping, and functional search, then returns the library.
 
     New surface style:
         { Transparency = 0.35, Frost = 0.80 }
@@ -24,12 +24,6 @@
         controls:SetExpanded(true)
         print(controls:IsExpanded())
 ]]
-
--- ================================================================
--- 作者配置区：直接改这里即可
--- ================================================================
-local CONFIG_FOLDER = "AppleGUI"
-local CONFIG_FILE_NAME = "config.json"
 
 local URL = "https://raw.githubusercontent.com/snwmdd114514-lang/Script/bbcb624f25e1a7bf9a3632a3c60c03b6f25c910d/AppleGUI"
 
@@ -89,52 +83,16 @@ local scriptStartedAt = os.clock()
 local scriptStartedText = os.date("%H:%M:%S")
 
 local DEFAULT_GUI_CONFIG = {
-    -- 内置 GUI设置 分类
     ShowGUISettings = true,
-
-    -- 主题
+    SidebarTranslucent = true,
     Theme = "Light",
-
-    -- 全局透明 / 磨砂
     TransparencyEnabled = true,
     FrostEnabled = true,
-    FrostStrength = 1.00,
-
-    -- 左侧分类栏
-    SidebarTranslucent = true,
-    SidebarTransparency = 0.22,
-
-    -- 主窗口
     WindowTransparent = false,
-    WindowTransparency = 0.08,
-    ContentTransparency = 0.10,
-
-    -- 下拉菜单默认保持不透明
     DropdownTransparent = false,
-    DropdownTransparency = 0.34,
-    DropdownFrost = 0.86,
-
-    -- 灵动岛
     ShowDynamicIsland = true,
-    IslandText = "点击打开",
-    IslandTextSize = 11,
-    IslandFPSTextSize = 11,
-    IslandIcon = "rbxassetid://8997386997",
-    IslandIconSize = 16,
-    IslandShowIcon = true,
-    IslandWidth = 196,
-    IslandHeight = 36,
 
-    -- 窗口缩放
-    WindowScale = 1.00,
-    MinWindowScale = 0.65,
-    MaxWindowScale = 1.45,
-    ShowResizeHandle = true,
-
-    -- 配置文件
-    ConfigFolder = "__APPLEGUI_CONFIG_FOLDER__",
-    ConfigFileName = "__APPLEGUI_CONFIG_FILE__",
-    ConfigPath = "__APPLEGUI_CONFIG_FOLDER__/__APPLEGUI_CONFIG_FILE__",
+    ConfigPath = "AppleGUI/config.json",
     UseConfigFile = true,
     AutoSaveConfig = true,
 }
@@ -276,42 +234,6 @@ local function saveConfigFile(config)
     return okWrite
 end
 
-local function buildConfigPath(folder, fileName)
-    folder =
-        tostring(
-            folder
-            or DEFAULT_GUI_CONFIG.ConfigFolder
-            or "AppleGUI"
-        )
-
-    fileName =
-        tostring(
-            fileName
-            or DEFAULT_GUI_CONFIG.ConfigFileName
-            or "config.json"
-        )
-
-    folder =
-        string.gsub(
-            folder,
-            "/+$",
-            ""
-        )
-
-    fileName =
-        string.gsub(
-            fileName,
-            "^/+",
-            ""
-        )
-
-    if folder == "" then
-        return fileName
-    end
-
-    return folder .. "/" .. fileName
-end
-
 local function resolveGUIConfig(config)
     local explicit =
         type(config) == "table"
@@ -325,19 +247,10 @@ local function resolveGUIConfig(config)
 
     if type(config) == "string" then
         requestedPath = config
-    elseif
-        type(explicit.ConfigPath) == "string"
-        and explicit.ConfigPath ~= ""
-    then
+    elseif type(explicit.ConfigPath) == "string" then
         requestedPath = explicit.ConfigPath
     else
-        requestedPath =
-            buildConfigPath(
-                explicit.ConfigFolder
-                    or result.ConfigFolder,
-                explicit.ConfigFileName
-                    or result.ConfigFileName
-            )
+        requestedPath = result.ConfigPath
     end
 
     result.ConfigPath = requestedPath
@@ -360,42 +273,11 @@ local function resolveGUIConfig(config)
 
     mergeConfig(result, explicit)
 
-    result.ConfigFolder =
+    result.ConfigPath =
         tostring(
-            result.ConfigFolder
-            or DEFAULT_GUI_CONFIG.ConfigFolder
-            or "AppleGUI"
+            result.ConfigPath
+            or DEFAULT_GUI_CONFIG.ConfigPath
         )
-
-    result.ConfigFileName =
-        tostring(
-            result.ConfigFileName
-            or DEFAULT_GUI_CONFIG.ConfigFileName
-            or "config.json"
-        )
-
-    if
-        type(config) ~= "string"
-        and not (
-            type(explicit.ConfigPath) == "string"
-            and explicit.ConfigPath ~= ""
-        )
-    then
-        result.ConfigPath =
-            buildConfigPath(
-                result.ConfigFolder,
-                result.ConfigFileName
-            )
-    else
-        result.ConfigPath =
-            tostring(
-                result.ConfigPath
-                or buildConfigPath(
-                    result.ConfigFolder,
-                    result.ConfigFileName
-                )
-            )
-    end
 
     result.Theme =
         normalizeTheme(result.Theme)
@@ -419,31 +301,87 @@ source = plainReplace(
     "init config argument"
 )
 
+----------------------------------------------------------------
+-- Rounded shadow clipping
+----------------------------------------------------------------
 
-source = plainReplace(
+source = replaceBetween(
     source,
-    [[    Black = Color3.fromRGB(0, 0, 0),
-}]],
-    [[    Black = Color3.fromRGB(0, 0, 0),
+    [[local function addShadow(parent, z, extraX, extraY, transparency, tight)]],
+    [[local function addTopHighlight(parent, inset, z, transparency)]],
+    [[local function addShadow(parent, z, extraX, extraY, transparency, tight)
+    extraX = extraX or 38
+    extraY = extraY or 38
 
-    -- Theme-aware colors used by navigation / specular highlights.
-    Highlight = Color3.fromRGB(255, 255, 255),
-    NavButton = Color3.fromRGB(255, 255, 255),
-    NavIcon = Color3.fromRGB(175, 175, 179),
-}]],
-    "theme color keys"
+    local shadow = Instance.new("ImageLabel")
+    shadow.Name = "ShadowImage"
+    shadow.Parent = parent
+    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+    shadow.Position = UDim2.fromScale(0.5, 0.5)
+    shadow.Size = UDim2.new(1, extraX, 1, extraY)
+    shadow.BackgroundTransparency = 1
+    shadow.Image = tight and ASSET.ShadowTight or ASSET.ShadowSoft
+    shadow.ImageColor3 = C.Black
+    shadow.ImageTransparency = transparency or 0.82
+    shadow.ScaleType = Enum.ScaleType.Slice
+    shadow.SliceCenter =
+        tight
+        and Rect.new(10, 10, 118, 118)
+        or Rect.new(47, 47, 450, 450)
+    shadow.ZIndex = z or 0
+
+    -- Clip the image itself to a rounded outline so the square texture corners
+    -- do not stick out from rounded GUI panels.
+    local shadowCorner = Instance.new("UICorner")
+    local parentCorner =
+        parent:FindFirstChildOfClass("UICorner")
+
+    if tight then
+        shadowCorner.CornerRadius =
+            UDim.new(1, 0)
+    elseif parentCorner then
+        local radius =
+            parentCorner.CornerRadius
+
+        if radius.Scale > 0 then
+            shadowCorner.CornerRadius =
+                UDim.new(1, 0)
+        else
+            shadowCorner.CornerRadius =
+                UDim.new(
+                    0,
+                    math.max(
+                        10,
+                        radius.Offset
+                        + math.floor(
+                            math.max(extraX, extraY)
+                            * 0.18
+                        )
+                    )
+                )
+        end
+    else
+        shadowCorner.CornerRadius =
+            UDim.new(
+                0,
+                math.max(
+                    16,
+                    math.floor(
+                        math.max(extraX, extraY)
+                        * 0.48
+                    )
+                )
+            )
+    end
+
+    shadowCorner.Parent = shadow
+    return shadow
+end
+
+]],
+    "rounded shadow"
 )
 
-source = plainReplace(
-    source,
-    [[    h.BackgroundColor3 = C.White]],
-    [[    h.BackgroundColor3 = C.Highlight]],
-    "theme-aware top highlight"
-)
-
-----------------------------------------------------------------
--- Replace entire liquid glass engine
-----------------------------------------------------------------
 ----------------------------------------------------------------
 -- Replace entire liquid glass engine
 ----------------------------------------------------------------
@@ -521,7 +459,7 @@ local frostEngine = [[    ------------------------------------------------------
         highlight.AnchorPoint = Vector2.new(0.5, 0)
         highlight.Position = UDim2.new(0.5, 0, 0, 1)
         highlight.Size = UDim2.new(1, -18, 0, 1)
-        highlight.BackgroundColor3 = C.Highlight
+        highlight.BackgroundColor3 = C.White
         highlight.BorderSizePixel = 0
         highlight.Active = false
         highlight.ZIndex = (z or obj.ZIndex) + 1
@@ -547,17 +485,9 @@ local frostEngine = [[    ------------------------------------------------------
                 and transparency
                 or 0
 
-            local globalFrostStrength =
-                math.clamp(
-                    tonumber(appConfig.FrostStrength)
-                    or 1,
-                    0,
-                    1
-                )
-
             local effectiveFrost =
                 appConfig.FrostEnabled ~= false
-                and frost * globalFrostStrength
+                and frost
                 or 0
 
             obj.BackgroundTransparency =
@@ -675,533 +605,6 @@ source = replaceBetween(
 )
 
 ----------------------------------------------------------------
--- Configurable Dynamic Island
-----------------------------------------------------------------
-
-source = replaceBetween(
-    source,
-    [[    ------------------------------------------------------------------------
-    -- Dynamic Island launcher]],
-    [[    ------------------------------------------------------------------------
-    -- Window shell + real nine-slice shadow image]],
-    [[    ------------------------------------------------------------------------
-    -- Dynamic Island launcher
-    ------------------------------------------------------------------------
-    local island = Instance.new("Frame")
-    island.Name = "DynamicIsland"
-    island.Parent = scrgui
-    island.AnchorPoint = Vector2.new(0.5, 0)
-    island.Position = UDim2.new(0.5, 0, 0, 8)
-    island.BackgroundColor3 = C.Black
-    island.BorderSizePixel = 0
-    island.ZIndex = 900
-    island.ClipsDescendants = true
-    circle(island)
-
-    local islandIcon = Instance.new("ImageLabel")
-    islandIcon.Name = "Icon"
-    islandIcon.Parent = island
-    islandIcon.AnchorPoint = Vector2.new(0, 0.5)
-    islandIcon.BackgroundTransparency = 1
-    islandIcon.ImageColor3 = C.White
-    islandIcon.ScaleType = Enum.ScaleType.Fit
-    islandIcon.ZIndex = 901
-
-    local islandAction = Instance.new("TextLabel")
-    islandAction.Name = "Action"
-    islandAction.Parent = island
-    islandAction.AnchorPoint = Vector2.new(0, 0.5)
-    islandAction.BackgroundTransparency = 1
-    islandAction.TextColor3 = C.White
-    islandAction.Font = Enum.Font.GothamMedium
-    islandAction.TextXAlignment = Enum.TextXAlignment.Left
-    islandAction.TextTruncate = Enum.TextTruncate.AtEnd
-    islandAction.ZIndex = 901
-
-    local islandFPS = Instance.new("TextLabel")
-    islandFPS.Name = "FPS"
-    islandFPS.Parent = island
-    islandFPS.AnchorPoint = Vector2.new(1, 0.5)
-    islandFPS.BackgroundTransparency = 1
-    islandFPS.Text = "60 FPS"
-    islandFPS.TextColor3 = Color3.fromRGB(142, 142, 147)
-    islandFPS.Font = Enum.Font.GothamMedium
-    islandFPS.TextXAlignment = Enum.TextXAlignment.Right
-    islandFPS.ZIndex = 901
-
-    local islandButton = Instance.new("TextButton")
-    islandButton.Parent = island
-    islandButton.Size = UDim2.fromScale(1, 1)
-    islandButton.BackgroundTransparency = 1
-    islandButton.Text = ""
-    islandButton.AutoButtonColor = false
-    islandButton.ZIndex = 902
-
-    local function refreshIslandAppearance()
-        local width =
-            math.clamp(
-                tonumber(appConfig.IslandWidth)
-                or 196,
-                130,
-                360
-            )
-
-        local height =
-            math.clamp(
-                tonumber(appConfig.IslandHeight)
-                or 36,
-                30,
-                58
-            )
-
-        local iconSize =
-            math.clamp(
-                tonumber(appConfig.IslandIconSize)
-                or 16,
-                10,
-                28
-            )
-
-        local textSize =
-            math.clamp(
-                tonumber(appConfig.IslandTextSize)
-                or 11,
-                8,
-                20
-            )
-
-        local fpsTextSize =
-            math.clamp(
-                tonumber(appConfig.IslandFPSTextSize)
-                or 11,
-                8,
-                20
-            )
-
-        island.Size =
-            UDim2.fromOffset(
-                width,
-                height
-            )
-
-        islandIcon.Visible =
-            appConfig.IslandShowIcon ~= false
-
-        islandIcon.Image =
-            tostring(
-                appConfig.IslandIcon
-                or ASSET.Settings
-            )
-
-        islandIcon.Size =
-            UDim2.fromOffset(
-                iconSize,
-                iconSize
-            )
-
-        islandIcon.Position =
-            UDim2.new(
-                0,
-                12,
-                0.5,
-                0
-            )
-
-        local actionX =
-            appConfig.IslandShowIcon ~= false
-            and (18 + iconSize)
-            or 14
-
-        islandAction.Position =
-            UDim2.new(
-                0,
-                actionX,
-                0.5,
-                0
-            )
-
-        islandAction.Size =
-            UDim2.new(
-                1,
-                -(actionX + 66),
-                1,
-                0
-            )
-
-        islandAction.Text =
-            tostring(
-                appConfig.IslandText
-                or "点击打开"
-            )
-
-        islandAction.TextSize =
-            textSize
-
-        islandFPS.Position =
-            UDim2.new(
-                1,
-                -12,
-                0.5,
-                0
-            )
-
-        islandFPS.Size =
-            UDim2.fromOffset(
-                58,
-                height
-            )
-
-        islandFPS.TextSize =
-            fpsTextSize
-    end
-
-    table.insert(
-        configRefreshers,
-        refreshIslandAppearance
-    )
-
-    refreshIslandAppearance()
-
-    local fpsFrames, fpsElapsed = 0, 0
-    local fpsConnection =
-        RunService.RenderStepped:Connect(
-            function(dt)
-                fpsFrames += 1
-                fpsElapsed += dt
-
-                if fpsElapsed >= 0.25 then
-                    local fps =
-                        math.max(
-                            1,
-                            math.floor(
-                                (
-                                    fpsFrames
-                                    / fpsElapsed
-                                )
-                                + 0.5
-                            )
-                        )
-
-                    islandFPS.Text =
-                        tostring(fps)
-                        .. " FPS"
-
-                    fpsFrames, fpsElapsed =
-                        0, 0
-                end
-            end
-        )
-
-    local islandBusy = false
-
-    local function islandJelly()
-        if islandBusy then
-            return
-        end
-
-        islandBusy = true
-
-        local baseW =
-            island.Size.X.Offset
-
-        local baseH =
-            island.Size.Y.Offset
-
-        local t1 = tw(
-            island,
-            TweenInfo.new(
-                0.075,
-                Enum.EasingStyle.Quad,
-                Enum.EasingDirection.Out
-            ),
-            {
-                Size =
-                    UDim2.fromOffset(
-                        math.floor(baseW * 1.055 + 0.5),
-                        math.floor(baseH * 1.075 + 0.5)
-                    )
-            }
-        )
-
-        t1.Completed:Wait()
-
-        local t2 = tw(
-            island,
-            TweenInfo.new(
-                0.085,
-                Enum.EasingStyle.Quad,
-                Enum.EasingDirection.InOut
-            ),
-            {
-                Size =
-                    UDim2.fromOffset(
-                        math.floor(baseW * 0.985 + 0.5),
-                        math.floor(baseH * 0.97 + 0.5)
-                    )
-            }
-        )
-
-        t2.Completed:Wait()
-
-        local t3 = tw(
-            island,
-            TweenInfo.new(
-                0.22,
-                Enum.EasingStyle.Back,
-                Enum.EasingDirection.Out
-            ),
-            {
-                Size =
-                    UDim2.fromOffset(
-                        baseW,
-                        baseH
-                    )
-            }
-        )
-
-        t3.Completed:Wait()
-        islandBusy = false
-    end
-
-    ------------------------------------------------------------------------
-    -- Window shell + real nine-slice shadow image
-]],
-    "configurable Dynamic Island"
-)
-
-----------------------------------------------------------------
--- Proportional resize handle
-----------------------------------------------------------------
-
-source = plainReplace(
-    source,
-    [[    local windowScale = Instance.new("UIScale")
-    windowScale.Name = "WindowScale"
-    windowScale.Scale = 0.97
-    windowScale.Parent = shell
-
-    local SIDEBAR_W = 258]],
-    [[    local windowScale = Instance.new("UIScale")
-    windowScale.Name = "WindowScale"
-
-    local userWindowScale =
-        math.clamp(
-            tonumber(appConfig.WindowScale)
-            or 1,
-            tonumber(appConfig.MinWindowScale)
-                or 0.65,
-            tonumber(appConfig.MaxWindowScale)
-                or 1.45
-        )
-
-    windowScale.Scale =
-        userWindowScale * 0.97
-
-    windowScale.Parent = shell
-
-    -- Bottom-right drag handle. It scales the whole UI, not just Shell.Size,
-    -- so fixed-pixel controls, text, switches and icons all scale together.
-    local resizeGrip = Instance.new("TextButton")
-    resizeGrip.Name = "ResizeGrip"
-    resizeGrip.Parent = main
-    resizeGrip.AnchorPoint = Vector2.new(1, 1)
-    resizeGrip.Position = UDim2.new(1, -4, 1, -4)
-    resizeGrip.Size = UDim2.fromOffset(30, 30)
-    resizeGrip.BackgroundTransparency = 1
-    resizeGrip.Text = ""
-    resizeGrip.AutoButtonColor = false
-    resizeGrip.ZIndex = 90
-
-    for i = 0, 2 do
-        local line = Instance.new("Frame")
-        line.Name = "GripLine"
-        line.Parent = resizeGrip
-        line.AnchorPoint = Vector2.new(0.5, 0.5)
-        line.Position = UDim2.new(
-            1,
-            -(7 + i * 5),
-            1,
-            -(7 + i * 5)
-        )
-        line.Size = UDim2.fromOffset(
-            12 + i * 4,
-            2
-        )
-        line.Rotation = -45
-        line.BackgroundColor3 = C.Secondary
-        line.BackgroundTransparency = 0.22 + i * 0.16
-        line.BorderSizePixel = 0
-        line.ZIndex = 91
-        round(line, 1)
-    end
-
-    local scaleDragging = false
-    local scaleDragInput
-    local scaleStartPointer
-    local scaleStartValue = userWindowScale
-    local fullscreenScaleOverride = false
-
-    local function scaleBounds()
-        local minimum =
-            math.clamp(
-                tonumber(appConfig.MinWindowScale)
-                or 0.65,
-                0.40,
-                1.50
-            )
-
-        local maximum =
-            math.clamp(
-                tonumber(appConfig.MaxWindowScale)
-                or 1.45,
-                minimum,
-                2.00
-            )
-
-        return minimum, maximum
-    end
-
-    local function setUserWindowScale(value, save)
-        local minimum, maximum =
-            scaleBounds()
-
-        userWindowScale =
-            math.clamp(
-                tonumber(value)
-                or 1,
-                minimum,
-                maximum
-            )
-
-        appConfig.WindowScale =
-            userWindowScale
-
-        windowScale.Scale =
-            userWindowScale
-
-        if
-            save
-            and appConfig.AutoSaveConfig ~= false
-        then
-            saveConfigFile(appConfig)
-        end
-    end
-
-    local function refreshResizeConfig()
-        resizeGrip.Visible =
-            appConfig.ShowResizeHandle ~= false
-
-        local minimum, maximum =
-            scaleBounds()
-
-        userWindowScale =
-            math.clamp(
-                tonumber(appConfig.WindowScale)
-                or userWindowScale
-                or 1,
-                minimum,
-                maximum
-            )
-
-        if not fullscreenScaleOverride then
-            windowScale.Scale =
-                userWindowScale
-        end
-    end
-
-    table.insert(
-        configRefreshers,
-        refreshResizeConfig
-    )
-
-    resizeGrip.InputBegan:Connect(function(input)
-        if
-            input.UserInputType
-                == Enum.UserInputType.MouseButton1
-            or input.UserInputType
-                == Enum.UserInputType.Touch
-        then
-            scaleDragging = true
-            scaleDragInput = input
-            scaleStartPointer = input.Position
-            scaleStartValue = userWindowScale
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if
-            not scaleDragging
-            or not scaleStartPointer
-        then
-            return
-        end
-
-        local valid =
-            input.UserInputType
-                == Enum.UserInputType.MouseMovement
-
-        if
-            input.UserInputType
-                == Enum.UserInputType.Touch
-        then
-            valid =
-                input == scaleDragInput
-        end
-
-        if not valid then
-            return
-        end
-
-        local delta =
-            input.Position
-            - scaleStartPointer
-
-        local deltaScale =
-            (
-                delta.X
-                + delta.Y
-            )
-            / 720
-
-        setUserWindowScale(
-            scaleStartValue + deltaScale,
-            false
-        )
-    end)
-
-    UserInputService.InputEnded:Connect(function(input)
-        if not scaleDragging then
-            return
-        end
-
-        local finished =
-            input.UserInputType
-                == Enum.UserInputType.MouseButton1
-
-        if
-            input.UserInputType
-                == Enum.UserInputType.Touch
-        then
-            finished =
-                input == scaleDragInput
-        end
-
-        if finished then
-            scaleDragging = false
-            scaleDragInput = nil
-            scaleStartPointer = nil
-
-            if appConfig.AutoSaveConfig ~= false then
-                saveConfigFile(appConfig)
-            end
-        end
-    end)
-
-    local SIDEBAR_W = 258]],
-    "proportional resize handle"
-)
-
-----------------------------------------------------------------
 -- Runtime GUI configuration / themes
 ----------------------------------------------------------------
 
@@ -1230,10 +633,6 @@ source = plainReplace(
         Divider = Color3.fromRGB(216, 216, 219),
         Blue = Color3.fromRGB(10, 122, 255),
         SwitchOff = Color3.fromRGB(206, 206, 211),
-
-        Highlight = Color3.fromRGB(255, 255, 255),
-        NavButton = Color3.fromRGB(255, 255, 255),
-        NavIcon = Color3.fromRGB(175, 175, 179),
     }
 
     local DARK_THEME = {
@@ -1249,13 +648,6 @@ source = plainReplace(
         Divider = Color3.fromRGB(72, 72, 74),
         Blue = Color3.fromRGB(10, 132, 255),
         SwitchOff = Color3.fromRGB(99, 99, 102),
-
-        -- 深色模式下顶部高光不再是一条刺眼白杠。
-        Highlight = Color3.fromRGB(103, 103, 108),
-
-        -- < > 返回 / 前进按钮
-        NavButton = Color3.fromRGB(54, 54, 57),
-        NavIcon = Color3.fromRGB(210, 210, 215),
     }
 
     local function colorClose(a, b)
@@ -1421,57 +813,27 @@ source = plainReplace(
             transparencyEnabled
             and appConfig.SidebarTranslucent ~= false
 
-        local sidebarAlpha =
-            math.clamp(
-                tonumber(appConfig.SidebarTransparency)
-                or 0.22,
-                0,
-                0.85
-            )
-
         leftPane.BackgroundTransparency =
-            sidebarTranslucent
-            and sidebarAlpha
-            or 0
+            sidebarTranslucent and 0.22 or 0
 
         local windowTransparent =
             transparencyEnabled
             and appConfig.WindowTransparent == true
 
-        local windowAlpha =
-            math.clamp(
-                tonumber(appConfig.WindowTransparency)
-                or 0.08,
-                0,
-                0.65
-            )
-
-        local contentAlpha =
-            math.clamp(
-                tonumber(appConfig.ContentTransparency)
-                or 0.10,
-                0,
-                0.65
-            )
-
-        -- 分类栏单独半透明时，主背景只打开一小部分，
-        -- 让左侧能真正透出游戏画面，同时右侧仍保持清晰。
+        -- When only the sidebar is translucent, the content pane stays opaque
+        -- while the shell underneath the sidebar is opened slightly so the
+        -- game can actually show through that side.
         main.BackgroundTransparency =
             windowTransparent
-            and windowAlpha
+            and 0.08
             or (
                 sidebarTranslucent
-                and math.min(
-                    0.32,
-                    sidebarAlpha * 0.82
-                )
+                and 0.18
                 or 0
             )
 
         contentPane.BackgroundTransparency =
-            windowTransparent
-            and contentAlpha
-            or 0
+            windowTransparent and 0.10 or 0
 
         island.Visible =
             appConfig.ShowDynamicIsland ~= false
@@ -1526,15 +888,21 @@ source = plainReplace(
 source = plainReplace(
     source,
     [[        b.BackgroundColor3 = Color3.fromRGB(255, 255, 255)]],
-    [[        b.BackgroundColor3 = C.NavButton]],
-    "theme nav button"
+    [[        b.BackgroundColor3 =
+            appConfig.Theme == "Dark"
+            and Color3.fromRGB(58, 58, 60)
+            or Color3.fromRGB(255, 255, 255)]],
+    "dark nav button"
 )
 
 source = plainReplace(
     source,
     [[        b.ImageColor3 = Color3.fromRGB(175, 175, 179)]],
-    [[        b.ImageColor3 = C.NavIcon]],
-    "theme nav icon"
+    [[        b.ImageColor3 =
+            appConfig.Theme == "Dark"
+            and Color3.fromRGB(205, 205, 210)
+            or Color3.fromRGB(175, 175, 179)]],
+    "dark nav icon"
 )
 
 ----------------------------------------------------------------
@@ -1583,7 +951,7 @@ source = plainReplace(
 
     accountHit.MouseEnter:Connect(function()
         tw(account, TweenInfo.new(0.12), {
-            BackgroundColor3 = C.CardPressed,
+            BackgroundColor3 = Color3.fromRGB(235, 235, 238),
             BackgroundTransparency = 0.36,
         })
     end)
@@ -1612,306 +980,6 @@ source = plainReplace(
 )
 
 ----------------------------------------------------------------
--- Window animation respects user-selected scale
-----------------------------------------------------------------
-
-source = replaceBetween(
-    source,
-    [[    ------------------------------------------------------------------------
-    -- Window animation]],
-    [[    local window = {}]],
-    [[    ------------------------------------------------------------------------
-    -- Window animation
-    ------------------------------------------------------------------------
-    local visible =
-        not (
-            workspace.CurrentCamera
-            and math.min(
-                workspace.CurrentCamera.ViewportSize.X,
-                workspace.CurrentCamera.ViewportSize.Y
-            ) < 600
-        )
-
-    local animating = false
-
-    local function showWindow()
-        if animating or shell.Visible then
-            return
-        end
-
-        animating = true
-        shell.Visible = true
-        main.GroupTransparency = 0.18
-
-        windowScale.Scale =
-            userWindowScale * 0.955
-
-        shell.Position =
-            UDim2.new(
-                0.5,
-                0,
-                0.5,
-                14
-            )
-
-        mainShadow.ImageTransparency = 0.94
-
-        tw(
-            shell,
-            TweenInfo.new(
-                0.34,
-                Enum.EasingStyle.Quint,
-                Enum.EasingDirection.Out
-            ),
-            {
-                Position =
-                    UDim2.fromScale(
-                        0.5,
-                        0.5
-                    )
-            }
-        )
-
-        tw(
-            main,
-            TweenInfo.new(
-                0.26,
-                Enum.EasingStyle.Quad,
-                Enum.EasingDirection.Out
-            ),
-            {
-                GroupTransparency = 0
-            }
-        )
-
-        tw(
-            mainShadow,
-            TweenInfo.new(
-                0.32,
-                Enum.EasingStyle.Quad,
-                Enum.EasingDirection.Out
-            ),
-            {
-                ImageTransparency = 0.78
-            }
-        )
-
-        local t = tw(
-            windowScale,
-            TweenInfo.new(
-                0.44,
-                Enum.EasingStyle.Back,
-                Enum.EasingDirection.Out
-            ),
-            {
-                Scale = userWindowScale
-            }
-        )
-
-        t.Completed:Wait()
-        animating = false
-    end
-
-    local function hideWindow()
-        if animating or not shell.Visible then
-            return
-        end
-
-        animating = true
-
-        tw(
-            main,
-            TweenInfo.new(
-                0.18,
-                Enum.EasingStyle.Quad,
-                Enum.EasingDirection.In
-            ),
-            {
-                GroupTransparency = 0.15
-            }
-        )
-
-        tw(
-            mainShadow,
-            TweenInfo.new(0.18),
-            {
-                ImageTransparency = 0.96
-            }
-        )
-
-        tw(
-            shell,
-            TweenInfo.new(
-                0.20,
-                Enum.EasingStyle.Quart,
-                Enum.EasingDirection.In
-            ),
-            {
-                Position =
-                    UDim2.new(
-                        0.5,
-                        0,
-                        0.5,
-                        12
-                    )
-            }
-        )
-
-        local t = tw(
-            windowScale,
-            TweenInfo.new(
-                0.20,
-                Enum.EasingStyle.Quart,
-                Enum.EasingDirection.In
-            ),
-            {
-                Scale =
-                    userWindowScale * 0.97
-            }
-        )
-
-        t.Completed:Wait()
-
-        shell.Visible = false
-        shell.Position =
-            UDim2.fromScale(0.5, 0.5)
-
-        main.GroupTransparency = 0
-        windowScale.Scale =
-            userWindowScale
-
-        animating = false
-    end
-
-    local window = {}]],
-    "scale-aware window animation"
-)
-
-----------------------------------------------------------------
--- Green traffic light always supports fullscreen
-----------------------------------------------------------------
-
-source = replaceBetween(
-    source,
-    [[    local greenCallback]],
-    [[    if visiblekey then]],
-    [[    local greenCallback
-
-    function window:GreenButton(callback)
-        greenCallback = callback
-    end
-
-    local zoomed = false
-    local savedSize
-    local savedPosition
-    local savedUserScale
-
-    resize.Activated:Connect(function()
-        -- Custom callbacks are additive now; they no longer disable fullscreen.
-        if greenCallback then
-            task.spawn(greenCallback)
-        end
-
-        if animating then
-            return
-        end
-
-        if not zoomed then
-            savedSize =
-                shell.Size
-
-            savedPosition =
-                shell.Position
-
-            savedUserScale =
-                userWindowScale
-
-            local cam =
-                workspace.CurrentCamera
-
-            if cam then
-                local v =
-                    cam.ViewportSize
-
-                -- Fullscreen uses scale 1 so custom resize scaling does not
-                -- accidentally make the fullscreen shell larger than viewport.
-                fullscreenScaleOverride = true
-                windowScale.Scale = 1
-
-                tw(
-                    shell,
-                    TweenInfo.new(
-                        0.34,
-                        Enum.EasingStyle.Quint,
-                        Enum.EasingDirection.Out
-                    ),
-                    {
-                        Size =
-                            UDim2.fromOffset(
-                                math.max(
-                                    340,
-                                    v.X - 16
-                                ),
-                                math.max(
-                                    470,
-                                    v.Y - 24
-                                )
-                            ),
-                        Position =
-                            UDim2.fromScale(
-                                0.5,
-                                0.5
-                            ),
-                    }
-                )
-            end
-
-            resizeGrip.Visible = false
-        else
-            userWindowScale =
-                savedUserScale
-                or userWindowScale
-
-            fullscreenScaleOverride = false
-
-            tw(
-                shell,
-                TweenInfo.new(
-                    0.34,
-                    Enum.EasingStyle.Quint,
-                    Enum.EasingDirection.Out
-                ),
-                {
-                    Size = savedSize,
-                    Position = savedPosition,
-                }
-            )
-
-            tw(
-                windowScale,
-                TweenInfo.new(
-                    0.34,
-                    Enum.EasingStyle.Quint,
-                    Enum.EasingDirection.Out
-                ),
-                {
-                    Scale =
-                        userWindowScale
-                }
-            )
-
-            resizeGrip.Visible =
-                appConfig.ShowResizeHandle ~= false
-        end
-
-        zoomed = not zoomed
-    end)
-
-    if visiblekey then]],
-    "green fullscreen"
-)
-
-----------------------------------------------------------------
 -- Public window configuration API
 ----------------------------------------------------------------
 
@@ -1935,26 +1003,6 @@ source = plainReplace(
         return saveConfigFile(appConfig)
     end
 
-    function window:SetScale(scale, skipSave)
-        setUserWindowScale(
-            scale,
-            false
-        )
-
-        if
-            not skipSave
-            and appConfig.AutoSaveConfig ~= false
-        then
-            saveConfigFile(appConfig)
-        end
-
-        return window
-    end
-
-    function window:GetScale()
-        return userWindowScale
-    end
-
     function window:SetConfig(key, value, skipSave)
         if type(key) == "table" then
             for k, v in pairs(key) do
@@ -1966,26 +1014,6 @@ source = plainReplace(
 
         appConfig.Theme =
             normalizeTheme(appConfig.Theme)
-
-        if
-            (
-                key == "ConfigFolder"
-                or key == "ConfigFileName"
-            )
-            or (
-                type(key) == "table"
-                and (
-                    key.ConfigFolder ~= nil
-                    or key.ConfigFileName ~= nil
-                )
-            )
-        then
-            appConfig.ConfigPath =
-                buildConfigPath(
-                    appConfig.ConfigFolder,
-                    appConfig.ConfigFileName
-                )
-        end
 
         applyRuntimeConfig()
 
@@ -3975,36 +3003,16 @@ local dropdownReplacement = [[        function sec:Slider(text, minValue, maxVal
 
             local function refreshDropdownConfig()
                 if appConfig.DropdownTransparent == true then
-                    local dropdownAlpha =
-                        math.clamp(
-                            tonumber(
-                                appConfig.DropdownTransparency
-                            )
-                            or 0.34,
-                            0,
-                            0.85
-                        )
-
-                    local dropdownFrost =
-                        math.clamp(
-                            tonumber(
-                                appConfig.DropdownFrost
-                            )
-                            or 0.86,
-                            0,
-                            1
-                        )
-
                     triggerFrostCtl:Set(
                         styleNumber(
                             triggerStyle,
                             "Transparency",
-                            dropdownAlpha * 0.35
+                            0.10
                         ),
                         styleNumber(
                             triggerStyle,
                             "Frost",
-                            dropdownFrost * 0.42
+                            0.26
                         )
                     )
 
@@ -4012,12 +3020,12 @@ local dropdownReplacement = [[        function sec:Slider(text, minValue, maxVal
                         styleNumber(
                             popupStyle,
                             "Transparency",
-                            dropdownAlpha
+                            0.34
                         ),
                         styleNumber(
                             popupStyle,
                             "Frost",
-                            dropdownFrost
+                            0.86
                         )
                     )
                 else
@@ -4272,7 +3280,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
 
         guiSettingsPage = window:Section("GUI设置", {
             Icon = ASSET.Settings,
-            Subtitle = "主题、透明度、磨砂与配置",
+            Subtitle = "界面外观、透明度与配置",
             ShowInSidebar = appConfig.ShowGUISettings ~= false,
             Expanded = true,
             Style = {
@@ -4296,8 +3304,8 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             rec.sidebarVisible
 
         guiSettingsPage:Label(
-            "AppleGUI 内置设置。执行器支持 readfile/writefile 时可读取和保存配置；"
-            .. "未检测到配置文件时自动使用默认值。",
+            "这里是 AppleGUI 内置设置。"
+            .. "如果执行器支持 readfile/writefile，设置会使用配置文件保存。",
             {
                 Transparency = 0.10,
                 Frost = 0.26,
@@ -4305,24 +3313,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
         )
 
         guiSettingsPage:Label(
-            "配置目录　"
-            .. tostring(
-                appConfig.ConfigFolder
-                or DEFAULT_GUI_CONFIG.ConfigFolder
-            )
-            .. "　文件　"
-            .. tostring(
-                appConfig.ConfigFileName
-                or DEFAULT_GUI_CONFIG.ConfigFileName
-            ),
-            {
-                Transparency = 0.10,
-                Frost = 0.24,
-            }
-        )
-
-        guiSettingsPage:Label(
-            "完整路径　"
+            "配置文件　"
             .. tostring(
                 appConfig.ConfigPath
                 or DEFAULT_GUI_CONFIG.ConfigPath
@@ -4332,10 +3323,6 @@ local guiSettingsPageCode = [[    ----------------------------------------------
                 Frost = 0.24,
             }
         )
-
-        ------------------------------------------------------------
-        -- 主题
-        ------------------------------------------------------------
 
         guiSettingsPage:Divider("主题")
 
@@ -4358,11 +3345,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
-        ------------------------------------------------------------
-        -- 分类栏
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("分类栏")
+        guiSettingsPage:Divider("透明与磨砂")
 
         guiSettingsPage:Switch(
             "分类栏半透明",
@@ -4375,48 +3358,23 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
-        guiSettingsPage:Slider(
-            "分类栏透明度",
-            0,
-            70,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.SidebarTransparency
-                    )
-                    or 0.22
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                -- 拖动 Slider 时不连续写配置文件。
-                window:SetConfig(
-                    "SidebarTransparency",
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        ------------------------------------------------------------
-        -- 全局透明度
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("透明")
-
         guiSettingsPage:Switch(
             "开启透明效果",
             appConfig.TransparencyEnabled ~= false,
             function(value)
                 window:SetConfig(
                     "TransparencyEnabled",
+                    value
+                )
+            end
+        )
+
+        guiSettingsPage:Switch(
+            "开启磨砂效果",
+            appConfig.FrostEnabled ~= false,
+            function(value)
+                window:SetConfig(
+                    "FrostEnabled",
                     value
                 )
             end
@@ -4433,116 +3391,6 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
-        guiSettingsPage:Slider(
-            "窗口透明度",
-            0,
-            55,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.WindowTransparency
-                    )
-                    or 0.08
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                window:SetConfig(
-                    "WindowTransparency",
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        guiSettingsPage:Slider(
-            "内容区域透明度",
-            0,
-            55,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.ContentTransparency
-                    )
-                    or 0.10
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                window:SetConfig(
-                    "ContentTransparency",
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        ------------------------------------------------------------
-        -- 磨砂
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("磨砂")
-
-        guiSettingsPage:Switch(
-            "开启磨砂效果",
-            appConfig.FrostEnabled ~= false,
-            function(value)
-                window:SetConfig(
-                    "FrostEnabled",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:Slider(
-            "全局磨砂强度",
-            0,
-            100,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.FrostStrength
-                    )
-                    or 1
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                window:SetConfig(
-                    "FrostStrength",
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        ------------------------------------------------------------
-        -- 下拉菜单
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("下拉菜单")
-
         guiSettingsPage:Switch(
             "下拉菜单透明",
             appConfig.DropdownTransparent == true,
@@ -4554,119 +3402,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
-        guiSettingsPage:Slider(
-            "下拉菜单透明度",
-            0,
-            75,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.DropdownTransparency
-                    )
-                    or 0.34
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                window:SetConfig(
-                    "DropdownTransparency",
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        guiSettingsPage:Slider(
-            "下拉菜单磨砂强度",
-            0,
-            100,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.DropdownFrost
-                    )
-                    or 0.86
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                window:SetConfig(
-                    "DropdownFrost",
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        ------------------------------------------------------------
-        -- 窗口比例
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("窗口比例")
-
-        guiSettingsPage:Slider(
-            "GUI 比例",
-            65,
-            145,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.WindowScale
-                    )
-                    or 1
-                )
-                * 100
-                + 0.5
-            ),
-            function(value)
-                window:SetScale(
-                    value / 100,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-                Suffix = "%",
-            }
-        )
-
-        guiSettingsPage:Switch(
-            "显示右下角缩放手柄",
-            appConfig.ShowResizeHandle ~= false,
-            function(value)
-                window:SetConfig(
-                    "ShowResizeHandle",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:Label(
-            "也可以直接拖动窗口右下角的小手柄。缩放使用 UIScale，"
-            .. "所以文字、图标、Switch、Slider 等控件会一起按比例变化。"
-        )
-
-        ------------------------------------------------------------
-        -- 灵动岛
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("灵动岛")
+        guiSettingsPage:Divider("其他")
 
         guiSettingsPage:Switch(
             "显示灵动岛",
@@ -4674,176 +3410,6 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             function(value)
                 window:SetConfig(
                     "ShowDynamicIsland",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:Switch(
-            "显示灵动岛图标",
-            appConfig.IslandShowIcon ~= false,
-            function(value)
-                window:SetConfig(
-                    "IslandShowIcon",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:TextField(
-            "灵动岛文字",
-            tostring(
-                appConfig.IslandText
-                or "点击打开"
-            ),
-            function(value)
-                if value == "" then
-                    value = "点击打开"
-                end
-
-                window:SetConfig(
-                    "IslandText",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:TextField(
-            "灵动岛图标",
-            tostring(
-                appConfig.IslandIcon
-                or "rbxassetid://8997386997"
-            ),
-            function(value)
-                if value == "" then
-                    value =
-                        "rbxassetid://8997386997"
-                end
-
-                window:SetConfig(
-                    "IslandIcon",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:Slider(
-            "主文字大小",
-            8,
-            20,
-            tonumber(
-                appConfig.IslandTextSize
-            ) or 11,
-            function(value)
-                window:SetConfig(
-                    "IslandTextSize",
-                    value,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-            }
-        )
-
-        guiSettingsPage:Slider(
-            "FPS 文字大小",
-            8,
-            20,
-            tonumber(
-                appConfig.IslandFPSTextSize
-            ) or 11,
-            function(value)
-                window:SetConfig(
-                    "IslandFPSTextSize",
-                    value,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-            }
-        )
-
-        guiSettingsPage:Slider(
-            "图标大小",
-            10,
-            28,
-            tonumber(
-                appConfig.IslandIconSize
-            ) or 16,
-            function(value)
-                window:SetConfig(
-                    "IslandIconSize",
-                    value,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-            }
-        )
-
-        guiSettingsPage:Slider(
-            "灵动岛宽度",
-            130,
-            320,
-            tonumber(
-                appConfig.IslandWidth
-            ) or 196,
-            function(value)
-                window:SetConfig(
-                    "IslandWidth",
-                    value,
-                    true
-                )
-            end,
-            {
-                Step = 2,
-                ShowSteps = false,
-                ShowValue = true,
-            }
-        )
-
-        guiSettingsPage:Slider(
-            "灵动岛高度",
-            30,
-            52,
-            tonumber(
-                appConfig.IslandHeight
-            ) or 36,
-            function(value)
-                window:SetConfig(
-                    "IslandHeight",
-                    value,
-                    true
-                )
-            end,
-            {
-                Step = 1,
-                ShowSteps = false,
-                ShowValue = true,
-            }
-        )
-
-        ------------------------------------------------------------
-        -- 其他
-        ------------------------------------------------------------
-
-        guiSettingsPage:Divider("其他")
-
-        guiSettingsPage:Switch(
-            "自动保存配置",
-            appConfig.AutoSaveConfig ~= false,
-            function(value)
-                window:SetConfig(
-                    "AutoSaveConfig",
                     value
                 )
             end
@@ -4865,18 +3431,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
         )
 
         guiSettingsPage:Label(
-            "Slider 调整透明度/磨砂时只实时应用，不会在拖动过程中连续写磁盘；"
-            .. "调整完成后可以点击「保存当前 GUI 配置」。",
-            {
-                Transparency = 0.12,
-                Frost = 0.28,
-            }
-        )
-
-        guiSettingsPage:Label(
-            "脚本作者也可以在 init() 的第 5 个参数传入配置表，"
-            .. "例如 ConfigFolder、Theme、SidebarTransparency、WindowScale、"
-            .. "IslandText、DropdownTransparent 等；"
+            "作者也可以在 init() 的第 5 个参数直接传入配置表；"
             .. "显式参数优先级高于配置文件。",
             {
                 Transparency = 0.12,
@@ -4887,9 +3442,6 @@ local guiSettingsPageCode = [[    ----------------------------------------------
 
 ]]
 
-----------------------------------------------------------------
--- Built-in account page
-----------------------------------------------------------------
 ----------------------------------------------------------------
 -- Built-in account page
 ----------------------------------------------------------------
@@ -5197,28 +3749,6 @@ for _, token in ipairs({
         )
     end
 end
-
-----------------------------------------------------------------
--- Author-level config folder substitution
-----------------------------------------------------------------
-
-source =
-    string.gsub(
-        source,
-        "__APPLEGUI_CONFIG_FOLDER__",
-        function()
-            return tostring(CONFIG_FOLDER)
-        end
-    )
-
-source =
-    string.gsub(
-        source,
-        "__APPLEGUI_CONFIG_FILE__",
-        function()
-            return tostring(CONFIG_FILE_NAME)
-        end
-    )
 
 ----------------------------------------------------------------
 -- Compile patched library
