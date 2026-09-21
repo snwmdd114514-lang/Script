@@ -6,7 +6,7 @@
     Repository-ready single-file library build.
     It uses the pinned previous AppleGUI commit as its immutable base,
     removes the EditableImage/screenshot liquid-glass system in memory,
-    adds lightweight transparent frosted surfaces, then returns the library.
+    adds lightweight transparent frosted surfaces + Slider API, then returns the library.
 
     New surface style:
         { Transparency = 0.35, Frost = 0.80 }
@@ -967,7 +967,933 @@ source = replaceBetween(
 -- Replace Dropdown
 ----------------------------------------------------------------
 
-local dropdownReplacement = [[        function sec:Dropdown(text, options, defaultValue, callback, style)
+local dropdownReplacement = [[        function sec:Slider(text, minValue, maxValue, defaultValue, callback, options)
+            options = options or {}
+
+            minValue = tonumber(minValue) or 0
+            maxValue = tonumber(maxValue) or 100
+
+            if maxValue < minValue then
+                minValue, maxValue = maxValue, minValue
+            end
+
+            if maxValue == minValue then
+                maxValue = minValue + 1
+            end
+
+            local initialStep = tonumber(options.Step) or 0
+            if initialStep < 0 then
+                initialStep = math.abs(initialStep)
+            end
+
+            -- Step = nil / "" / 0 means fully continuous.
+            if initialStep <= 0 then
+                initialStep = 0
+            end
+
+            local initialShowSteps =
+                initialStep > 0
+                and options.ShowSteps ~= false
+
+            local value =
+                math.clamp(
+                    tonumber(defaultValue) or minValue,
+                    minValue,
+                    maxValue
+                )
+
+            local row = makeRow(
+                "slider",
+                currentMobile and 94 or 70,
+                options
+            )
+
+            row:SetAttribute("Minimum", minValue)
+            row:SetAttribute("Maximum", maxValue)
+            row:SetAttribute("Step", initialStep)
+            row:SetAttribute("ShowSteps", initialShowSteps)
+            row:SetAttribute("Value", value)
+
+            ----------------------------------------------------------------
+            -- Label
+            ----------------------------------------------------------------
+
+            local l = Instance.new("TextLabel")
+            l.Parent = row
+            l.BackgroundTransparency = 1
+            l.Text = text
+            l.TextColor3 = C.Text
+            l.TextSize = currentMobile and 14 or 16
+            l.Font = Enum.Font.Gotham
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.ZIndex = 18
+
+            ----------------------------------------------------------------
+            -- Slider control host
+            ----------------------------------------------------------------
+
+            local control = Instance.new("Frame")
+            control.Parent = row
+            control.BackgroundTransparency = 1
+            control.ZIndex = 19
+
+            if currentMobile then
+                l.Position = UDim2.fromOffset(14, 3)
+                l.Size = UDim2.new(1, -28, 0, 25)
+
+                control.Position = UDim2.fromOffset(12, 31)
+                control.Size = UDim2.new(1, -24, 0, 52)
+            else
+                l.Position = UDim2.fromOffset(16, 0)
+                l.Size = UDim2.new(0.31, 0, 1, 0)
+
+                control.AnchorPoint = Vector2.new(1, 0.5)
+                control.Position = UDim2.new(1, -12, 0.5, 0)
+                control.Size = UDim2.new(0.64, 0, 0, 52)
+            end
+
+            local leftIconAsset = options.LeftIcon
+            local rightIconAsset = options.RightIcon
+
+            local leftPad =
+                leftIconAsset and 31 or 4
+
+            local rightPad =
+                rightIconAsset and 31 or 4
+
+            local iconColor =
+                typeof(options.IconColor) == "Color3"
+                and options.IconColor
+                or Color3.fromRGB(112, 112, 117)
+
+            if leftIconAsset and leftIconAsset ~= "" then
+                local leftIcon = iconLabel(
+                    control,
+                    leftIconAsset,
+                    tonumber(options.LeftIconSize) or 18,
+                    typeof(options.LeftIconColor) == "Color3"
+                        and options.LeftIconColor
+                        or iconColor,
+                    23
+                )
+
+                leftIcon.AnchorPoint = Vector2.new(0, 0.5)
+                leftIcon.Position = UDim2.new(0, 0, 0, 20)
+            end
+
+            if rightIconAsset and rightIconAsset ~= "" then
+                local rightIcon = iconLabel(
+                    control,
+                    rightIconAsset,
+                    tonumber(options.RightIconSize) or 20,
+                    typeof(options.RightIconColor) == "Color3"
+                        and options.RightIconColor
+                        or iconColor,
+                    23
+                )
+
+                rightIcon.AnchorPoint = Vector2.new(1, 0.5)
+                rightIcon.Position = UDim2.new(1, 0, 0, 20)
+            end
+
+            ----------------------------------------------------------------
+            -- Track
+            ----------------------------------------------------------------
+
+            local track = Instance.new("Frame")
+            track.Parent = control
+            track.Position = UDim2.new(
+                0,
+                leftPad,
+                0,
+                16
+            )
+            track.Size = UDim2.new(
+                1,
+                -(leftPad + rightPad),
+                0,
+                8
+            )
+            track.BackgroundColor3 =
+                typeof(options.TrackColor) == "Color3"
+                and options.TrackColor
+                or Color3.fromRGB(218, 218, 222)
+            track.BorderSizePixel = 0
+            track.ZIndex = 21
+            circle(track)
+
+            local fill = Instance.new("Frame")
+            fill.Parent = track
+            fill.Size = UDim2.fromScale(0, 1)
+            fill.BackgroundColor3 =
+                typeof(options.FillColor) == "Color3"
+                and options.FillColor
+                or C.Blue
+            fill.BorderSizePixel = 0
+            fill.ZIndex = 22
+            circle(fill)
+
+            ----------------------------------------------------------------
+            -- Step dots
+            ----------------------------------------------------------------
+
+            local dotsHost = Instance.new("Frame")
+            dotsHost.Name = "StepDots"
+            dotsHost.Parent = control
+            dotsHost.Position = UDim2.new(
+                0,
+                leftPad,
+                0,
+                32
+            )
+            dotsHost.Size = UDim2.new(
+                1,
+                -(leftPad + rightPad),
+                0,
+                8
+            )
+            dotsHost.BackgroundTransparency = 1
+            dotsHost.ZIndex = 20
+
+            local function getStep()
+                local step =
+                    tonumber(
+                        row:GetAttribute("Step")
+                    ) or 0
+
+                if step < 0 then
+                    step = math.abs(step)
+                end
+
+                if step <= 0 then
+                    return 0
+                end
+
+                return step
+            end
+
+            local function showStepsEnabled()
+                return
+                    getStep() > 0
+                    and row:GetAttribute("ShowSteps") == true
+            end
+
+            local function rebuildStepDots()
+                for _, child in ipairs(
+                    dotsHost:GetChildren()
+                ) do
+                    child:Destroy()
+                end
+
+                dotsHost.Visible =
+                    showStepsEnabled()
+
+                if not dotsHost.Visible then
+                    return
+                end
+
+                local step = getStep()
+                local range = maxValue - minValue
+
+                if step <= 0 or range <= 0 then
+                    dotsHost.Visible = false
+                    return
+                end
+
+                local intervalCount =
+                    math.max(
+                        1,
+                        math.floor(
+                            range / step + 0.000001
+                        )
+                    )
+
+                -- Avoid building hundreds of GUI dots.
+                -- Snapping still uses the exact Step value; only the
+                -- visual markers are thinned when there are too many.
+                local maxDots =
+                    math.max(
+                        2,
+                        tonumber(options.MaxStepDots)
+                            or 32
+                    )
+
+                local stride =
+                    math.max(
+                        1,
+                        math.ceil(
+                            intervalCount
+                            / (maxDots - 1)
+                        )
+                    )
+
+                local dotColor =
+                    typeof(options.StepColor) == "Color3"
+                    and options.StepColor
+                    or Color3.fromRGB(177, 177, 182)
+
+                local dotSize =
+                    math.clamp(
+                        tonumber(options.StepDotSize)
+                            or 3,
+                        2,
+                        6
+                    )
+
+                local function makeDot(alpha)
+                    local dot = Instance.new("Frame")
+                    dot.Parent = dotsHost
+                    dot.AnchorPoint =
+                        Vector2.new(0.5, 0.5)
+                    dot.Position =
+                        UDim2.new(
+                            math.clamp(alpha, 0, 1),
+                            0,
+                            0.5,
+                            0
+                        )
+                    dot.Size =
+                        UDim2.fromOffset(
+                            dotSize,
+                            dotSize
+                        )
+                    dot.BackgroundColor3 =
+                        dotColor
+                    dot.BackgroundTransparency =
+                        0.16
+                    dot.BorderSizePixel = 0
+                    dot.ZIndex = 21
+                    circle(dot)
+                end
+
+                local lastAlpha = -1
+
+                for i = 0, intervalCount, stride do
+                    local steppedValue =
+                        math.min(
+                            minValue + i * step,
+                            maxValue
+                        )
+
+                    local alpha =
+                        (steppedValue - minValue)
+                        / range
+
+                    makeDot(alpha)
+                    lastAlpha = alpha
+                end
+
+                if lastAlpha < 0.999 then
+                    makeDot(1)
+                end
+            end
+
+            ----------------------------------------------------------------
+            -- Knob: same visual language as Switch
+            ----------------------------------------------------------------
+
+            local knobHolder = Instance.new("Frame")
+            knobHolder.Parent = track
+            knobHolder.AnchorPoint =
+                Vector2.new(0.5, 0.5)
+            knobHolder.Position =
+                UDim2.new(0, 0, 0.5, 0)
+            knobHolder.Size =
+                UDim2.fromOffset(27, 27)
+            knobHolder.BackgroundTransparency = 1
+            knobHolder.ZIndex = 26
+
+            local knobShadow =
+                addShadow(
+                    knobHolder,
+                    26,
+                    12,
+                    12,
+                    0.82,
+                    true
+                )
+
+            local knob = Instance.new("Frame")
+            knob.Parent = knobHolder
+            knob.Size = UDim2.fromScale(1, 1)
+            knob.BackgroundColor3 = C.White
+            knob.BackgroundTransparency = 0
+            knob.BorderSizePixel = 0
+            knob.ZIndex = 27
+            knob.ClipsDescendants = true
+            circle(knob)
+
+            local knobStyle =
+                childStyle(options, "Knob")
+
+            local hoverTransparency =
+                styleNumber(
+                    knobStyle,
+                    "Transparency",
+                    0.72
+                )
+
+            local hoverFrost =
+                styleNumber(
+                    knobStyle,
+                    "Frost",
+                    0.88
+                )
+
+            local knobFrost =
+                applyFrostedSurface(
+                    knob,
+                    {
+                        Transparency = 0,
+                        Frost = 0,
+                    },
+                    28,
+                    0,
+                    0
+                )
+
+            local knobDark =
+                stroke(
+                    knob,
+                    Color3.fromRGB(22, 22, 24),
+                    0.92,
+                    0.8
+                )
+
+            local knobLight =
+                stroke(
+                    knob,
+                    C.White,
+                    1,
+                    1
+                )
+
+            local knobScale =
+                Instance.new("UIScale")
+            knobScale.Scale = 1
+            knobScale.Parent = knobHolder
+
+            ----------------------------------------------------------------
+            -- Optional value label
+            ----------------------------------------------------------------
+
+            local valueLabel
+
+            if options.ShowValue == true then
+                valueLabel =
+                    Instance.new("TextLabel")
+
+                valueLabel.Parent = control
+                valueLabel.AnchorPoint =
+                    Vector2.new(0.5, 1)
+                valueLabel.Position =
+                    UDim2.new(0.5, 0, 0, 10)
+                valueLabel.Size =
+                    UDim2.fromOffset(86, 18)
+                valueLabel.BackgroundTransparency = 1
+                valueLabel.TextColor3 =
+                    C.Secondary
+                valueLabel.TextSize = 11
+                valueLabel.Font =
+                    Enum.Font.GothamMedium
+                valueLabel.TextXAlignment =
+                    Enum.TextXAlignment.Center
+                valueLabel.ZIndex = 24
+            end
+
+            local function decimalsForStep(step)
+                if step <= 0 then
+                    return
+                        tonumber(options.Decimals)
+                        or 2
+                end
+
+                local s = tostring(step)
+                local dot =
+                    string.find(s, ".", 1, true)
+
+                if not dot then
+                    return 0
+                end
+
+                return math.min(
+                    6,
+                    #s - dot
+                )
+            end
+
+            local function formatValue(v)
+                if
+                    type(options.ValueFormatter)
+                        == "function"
+                then
+                    local ok, result =
+                        pcall(
+                            options.ValueFormatter,
+                            v
+                        )
+
+                    if ok and result ~= nil then
+                        return tostring(result)
+                    end
+                end
+
+                local decimals =
+                    decimalsForStep(getStep())
+
+                local suffix =
+                    tostring(options.Suffix or "")
+
+                return
+                    string.format(
+                        "%."
+                        .. tostring(decimals)
+                        .. "f",
+                        v
+                    )
+                    .. suffix
+            end
+
+            ----------------------------------------------------------------
+            -- Value logic
+            ----------------------------------------------------------------
+
+            local settingValueAttribute = false
+
+            local function snapValue(raw)
+                raw =
+                    math.clamp(
+                        tonumber(raw) or minValue,
+                        minValue,
+                        maxValue
+                    )
+
+                local step = getStep()
+
+                if step > 0 then
+                    raw =
+                        minValue
+                        + math.floor(
+                            (raw - minValue)
+                            / step
+                            + 0.5
+                        )
+                        * step
+                end
+
+                return
+                    math.clamp(
+                        raw,
+                        minValue,
+                        maxValue
+                    )
+            end
+
+            local function alphaForValue(v)
+                return
+                    math.clamp(
+                        (v - minValue)
+                        / (maxValue - minValue),
+                        0,
+                        1
+                    )
+            end
+
+            local function updateVisual()
+                local alpha =
+                    alphaForValue(value)
+
+                fill.Size =
+                    UDim2.new(
+                        alpha,
+                        0,
+                        1,
+                        0
+                    )
+
+                knobHolder.Position =
+                    UDim2.new(
+                        alpha,
+                        0,
+                        0.5,
+                        0
+                    )
+
+                if valueLabel then
+                    valueLabel.Text =
+                        formatValue(value)
+                end
+            end
+
+            local function setValue(newValue, fireCallback)
+                local snapped =
+                    snapValue(newValue)
+
+                if math.abs(snapped - value) < 1e-9 then
+                    updateVisual()
+                    return
+                end
+
+                value = snapped
+
+                settingValueAttribute = true
+                row:SetAttribute("Value", value)
+                settingValueAttribute = false
+
+                updateVisual()
+
+                if fireCallback and callback then
+                    callback(value)
+                end
+            end
+
+            ----------------------------------------------------------------
+            -- Hover / drag jelly animation
+            ----------------------------------------------------------------
+
+            local hovering = false
+            local dragging = false
+            local dragInput
+            local jellyToken = 0
+
+            local function showHoverFrost()
+                knobFrost:Set(
+                    hoverTransparency,
+                    hoverFrost
+                )
+
+                tw(
+                    knobDark,
+                    TweenInfo.new(0.12),
+                    {Transparency = 0.78}
+                )
+
+                tw(
+                    knobLight,
+                    TweenInfo.new(0.12),
+                    {Transparency = 0.22}
+                )
+
+                tw(
+                    knobShadow,
+                    TweenInfo.new(0.12),
+                    {ImageTransparency = 0.86}
+                )
+            end
+
+            local function showNormalBall()
+                knobFrost:Set(0, 0)
+
+                tw(
+                    knobDark,
+                    TweenInfo.new(0.14),
+                    {Transparency = 0.92}
+                )
+
+                tw(
+                    knobLight,
+                    TweenInfo.new(0.14),
+                    {Transparency = 1}
+                )
+
+                tw(
+                    knobShadow,
+                    TweenInfo.new(0.14),
+                    {ImageTransparency = 0.82}
+                )
+            end
+
+            local function startJelly()
+                jellyToken += 1
+                local token = jellyToken
+
+                showHoverFrost()
+
+                task.spawn(function()
+                    local a = tw(
+                        knobScale,
+                        TweenInfo.new(
+                            0.070,
+                            Enum.EasingStyle.Quad,
+                            Enum.EasingDirection.Out
+                        ),
+                        {Scale = 1.32}
+                    )
+
+                    a.Completed:Wait()
+
+                    if
+                        token ~= jellyToken
+                        or (not hovering and not dragging)
+                    then
+                        return
+                    end
+
+                    local b = tw(
+                        knobScale,
+                        TweenInfo.new(
+                            0.080,
+                            Enum.EasingStyle.Quad,
+                            Enum.EasingDirection.InOut
+                        ),
+                        {Scale = 1.20}
+                    )
+
+                    b.Completed:Wait()
+
+                    if
+                        token ~= jellyToken
+                        or (not hovering and not dragging)
+                    then
+                        return
+                    end
+
+                    tw(
+                        knobScale,
+                        TweenInfo.new(
+                            0.18,
+                            Enum.EasingStyle.Back,
+                            Enum.EasingDirection.Out
+                        ),
+                        {Scale = 1.25}
+                    )
+                end)
+            end
+
+            local function endJelly()
+                jellyToken += 1
+                showNormalBall()
+
+                tw(
+                    knobScale,
+                    TweenInfo.new(
+                        0.24,
+                        Enum.EasingStyle.Back,
+                        Enum.EasingDirection.Out
+                    ),
+                    {Scale = 1}
+                )
+            end
+
+            ----------------------------------------------------------------
+            -- Hit areas
+            ----------------------------------------------------------------
+
+            local trackHit =
+                Instance.new("TextButton")
+
+            trackHit.Parent = control
+            trackHit.Position =
+                UDim2.new(
+                    0,
+                    leftPad,
+                    0,
+                    2
+                )
+            trackHit.Size =
+                UDim2.new(
+                    1,
+                    -(leftPad + rightPad),
+                    0,
+                    36
+                )
+            trackHit.BackgroundTransparency = 1
+            trackHit.Text = ""
+            trackHit.AutoButtonColor = false
+            trackHit.ZIndex = 25
+
+            local knobHit =
+                Instance.new("TextButton")
+
+            knobHit.Parent = knobHolder
+            knobHit.AnchorPoint =
+                Vector2.new(0.5, 0.5)
+            knobHit.Position =
+                UDim2.fromScale(0.5, 0.5)
+            knobHit.Size =
+                UDim2.fromOffset(42, 42)
+            knobHit.BackgroundTransparency = 1
+            knobHit.Text = ""
+            knobHit.AutoButtonColor = false
+            knobHit.ZIndex = 30
+
+            local function valueFromScreenX(screenX)
+                local width =
+                    math.max(
+                        1,
+                        track.AbsoluteSize.X
+                    )
+
+                local alpha =
+                    math.clamp(
+                        (
+                            screenX
+                            - track.AbsolutePosition.X
+                        )
+                        / width,
+                        0,
+                        1
+                    )
+
+                return
+                    minValue
+                    + (maxValue - minValue)
+                    * alpha
+            end
+
+            local function beginDrag(input)
+                dragging = true
+                dragInput = input
+
+                if not hovering then
+                    startJelly()
+                end
+
+                setValue(
+                    valueFromScreenX(
+                        input.Position.X
+                    ),
+                    true
+                )
+            end
+
+            trackHit.InputBegan:Connect(function(input)
+                if
+                    input.UserInputType
+                        == Enum.UserInputType.MouseButton1
+                    or input.UserInputType
+                        == Enum.UserInputType.Touch
+                then
+                    beginDrag(input)
+                end
+            end)
+
+            knobHit.InputBegan:Connect(function(input)
+                if
+                    input.UserInputType
+                        == Enum.UserInputType.MouseButton1
+                    or input.UserInputType
+                        == Enum.UserInputType.Touch
+                then
+                    beginDrag(input)
+                end
+            end)
+
+            knobHit.MouseEnter:Connect(function()
+                if hovering then return end
+                hovering = true
+
+                if not dragging then
+                    startJelly()
+                end
+            end)
+
+            knobHit.MouseLeave:Connect(function()
+                hovering = false
+
+                if not dragging then
+                    endJelly()
+                end
+            end)
+
+            UserInputService.InputChanged:Connect(function(input)
+                if not dragging then
+                    return
+                end
+
+                local allowed =
+                    input.UserInputType
+                        == Enum.UserInputType.MouseMovement
+
+                if
+                    input.UserInputType
+                        == Enum.UserInputType.Touch
+                then
+                    allowed =
+                        input == dragInput
+                end
+
+                if allowed then
+                    setValue(
+                        valueFromScreenX(
+                            input.Position.X
+                        ),
+                        true
+                    )
+                end
+            end)
+
+            UserInputService.InputEnded:Connect(function(input)
+                if not dragging then
+                    return
+                end
+
+                local endsDrag =
+                    input.UserInputType
+                        == Enum.UserInputType.MouseButton1
+
+                if
+                    input.UserInputType
+                        == Enum.UserInputType.Touch
+                then
+                    endsDrag =
+                        input == dragInput
+                end
+
+                if endsDrag then
+                    dragging = false
+                    dragInput = nil
+
+                    if not hovering then
+                        endJelly()
+                    end
+                end
+            end)
+
+            ----------------------------------------------------------------
+            -- Runtime attributes
+            ----------------------------------------------------------------
+
+            row:GetAttributeChangedSignal("Value"):Connect(function()
+                if settingValueAttribute then
+                    return
+                end
+
+                setValue(
+                    row:GetAttribute("Value"),
+                    false
+                )
+            end)
+
+            row:GetAttributeChangedSignal("Step"):Connect(function()
+                local step = getStep()
+
+                if step <= 0 then
+                    dotsHost.Visible = false
+                end
+
+                rebuildStepDots()
+                setValue(value, false)
+            end)
+
+            row:GetAttributeChangedSignal("ShowSteps"):Connect(function()
+                rebuildStepDots()
+            end)
+
+            rebuildStepDots()
+            value = snapValue(value)
+
+            settingValueAttribute = true
+            row:SetAttribute("Value", value)
+            settingValueAttribute = false
+
+            updateVisual()
+            showNormalBall()
+
+            return row
+        end
+
+        function sec:Dropdown(text, options, defaultValue, callback, style)
             options = options or {}
 
             local current =
@@ -1574,6 +2500,10 @@ source = plainReplace(
 ----------------------------------------------------------------
 -- Safety check
 ----------------------------------------------------------------
+
+if not string.find(source, "function sec:Slider", 1, true) then
+    error("[AppleGUI Frost Patch] Slider API patch missing")
+end
 
 for _, token in ipairs({
     "attachLiquidGlass",
