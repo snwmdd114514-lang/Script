@@ -125,11 +125,19 @@ local DEFAULT_GUI_CONFIG = {
     IslandWidth = 196,
     IslandHeight = 36,
 
-    -- 窗口缩放
-    WindowScale = 1.00,
-    MinWindowScale = 0.65,
-    MaxWindowScale = 1.45,
+    -- 窗口大小
+    -- 拖动右下角时，宽和高独立变化；窗口保持中心不动，
+    -- 所以横向会向左右两边同时变长，纵向会向上下两边同时变高。
+    WindowWidth = 820,
+    WindowHeight = 650,
+    MinWindowWidth = 560,
+    MinWindowHeight = 430,
+    MaxWindowWidth = 1380,
+    MaxWindowHeight = 980,
     ShowResizeHandle = true,
+
+    -- 兼容旧调用：window:SetScale(x) 仍可用，但拖拽不再使用等比缩放。
+    WindowScale = 1.00,
 
     -- 配置文件
     ConfigFolder = "__APPLEGUI_CONFIG_FOLDER__",
@@ -970,7 +978,7 @@ source = replaceBetween(
 )
 
 ----------------------------------------------------------------
--- Proportional resize handle
+-- Independent width / height resize handle
 ----------------------------------------------------------------
 
 source = plainReplace(
@@ -983,30 +991,120 @@ source = plainReplace(
     local SIDEBAR_W = 258]],
     [[    local windowScale = Instance.new("UIScale")
     windowScale.Name = "WindowScale"
-
-    local userWindowScale =
-        math.clamp(
-            tonumber(appConfig.WindowScale)
-            or 1,
-            tonumber(appConfig.MinWindowScale)
-                or 0.65,
-            tonumber(appConfig.MaxWindowScale)
-                or 1.45
-        )
-
-    windowScale.Scale =
-        userWindowScale * 0.97
-
+    windowScale.Scale = 0.97
     windowScale.Parent = shell
 
-    -- Bottom-right drag handle. It scales the whole UI, not just Shell.Size,
-    -- so fixed-pixel controls, text, switches and icons all scale together.
+    local BASE_WINDOW_WIDTH = 820
+    local BASE_WINDOW_HEIGHT = 650
+
+    local userWindowWidth =
+        tonumber(appConfig.WindowWidth)
+        or BASE_WINDOW_WIDTH
+
+    local userWindowHeight =
+        tonumber(appConfig.WindowHeight)
+        or BASE_WINDOW_HEIGHT
+
+    local fullscreenSizeOverride = false
+
+    local function sizeBounds()
+        local minW =
+            math.max(
+                420,
+                tonumber(appConfig.MinWindowWidth)
+                or 560
+            )
+
+        local minH =
+            math.max(
+                340,
+                tonumber(appConfig.MinWindowHeight)
+                or 430
+            )
+
+        local maxW =
+            math.max(
+                minW,
+                tonumber(appConfig.MaxWindowWidth)
+                or 1380
+            )
+
+        local maxH =
+            math.max(
+                minH,
+                tonumber(appConfig.MaxWindowHeight)
+                or 980
+            )
+
+        return minW, minH, maxW, maxH
+    end
+
+    local function setUserWindowSize(width, height, save)
+        local minW, minH, maxW, maxH =
+            sizeBounds()
+
+        userWindowWidth =
+            math.clamp(
+                math.floor(
+                    (tonumber(width) or userWindowWidth)
+                    + 0.5
+                ),
+                minW,
+                maxW
+            )
+
+        userWindowHeight =
+            math.clamp(
+                math.floor(
+                    (tonumber(height) or userWindowHeight)
+                    + 0.5
+                ),
+                minH,
+                maxH
+            )
+
+        appConfig.WindowWidth =
+            userWindowWidth
+
+        appConfig.WindowHeight =
+            userWindowHeight
+
+        if not fullscreenSizeOverride then
+            shell.Size =
+                UDim2.fromOffset(
+                    userWindowWidth,
+                    userWindowHeight
+                )
+        end
+
+        if
+            save
+            and appConfig.AutoSaveConfig ~= false
+        then
+            saveConfigFile(appConfig)
+        end
+    end
+
+    -- Initial stored size.
+    setUserWindowSize(
+        userWindowWidth,
+        userWindowHeight,
+        false
+    )
+
+    -- Bottom-right handle.
+    -- Because Shell.AnchorPoint is 0.5,0.5 and Shell stays centered:
+    --   drag right  -> both left/right edges move out
+    --   drag down   -> both top/bottom edges move out
+    --
+    -- X and Y are calculated independently. Horizontal-only dragging never
+    -- changes height, and vertical-only dragging never changes width.
     local resizeGrip = Instance.new("TextButton")
     resizeGrip.Name = "ResizeGrip"
     resizeGrip.Parent = main
     resizeGrip.AnchorPoint = Vector2.new(1, 1)
     resizeGrip.Position = UDim2.new(1, -4, 1, -4)
-    resizeGrip.Size = UDim2.fromOffset(30, 30)
+    resizeGrip.Size = UDim2.fromOffset(32, 32)
     resizeGrip.BackgroundTransparency = 1
     resizeGrip.Text = ""
     resizeGrip.AutoButtonColor = false
@@ -1035,77 +1133,24 @@ source = plainReplace(
         round(line, 1)
     end
 
-    local scaleDragging = false
-    local scaleDragInput
-    local scaleStartPointer
-    local scaleStartValue = userWindowScale
-    local fullscreenScaleOverride = false
-
-    local function scaleBounds()
-        local minimum =
-            math.clamp(
-                tonumber(appConfig.MinWindowScale)
-                or 0.65,
-                0.40,
-                1.50
-            )
-
-        local maximum =
-            math.clamp(
-                tonumber(appConfig.MaxWindowScale)
-                or 1.45,
-                minimum,
-                2.00
-            )
-
-        return minimum, maximum
-    end
-
-    local function setUserWindowScale(value, save)
-        local minimum, maximum =
-            scaleBounds()
-
-        userWindowScale =
-            math.clamp(
-                tonumber(value)
-                or 1,
-                minimum,
-                maximum
-            )
-
-        appConfig.WindowScale =
-            userWindowScale
-
-        windowScale.Scale =
-            userWindowScale
-
-        if
-            save
-            and appConfig.AutoSaveConfig ~= false
-        then
-            saveConfigFile(appConfig)
-        end
-    end
+    local resizeDragging = false
+    local resizeDragInput
+    local resizeStartPointer
+    local resizeStartWidth
+    local resizeStartHeight
 
     local function refreshResizeConfig()
         resizeGrip.Visible =
             appConfig.ShowResizeHandle ~= false
 
-        local minimum, maximum =
-            scaleBounds()
-
-        userWindowScale =
-            math.clamp(
-                tonumber(appConfig.WindowScale)
-                or userWindowScale
-                or 1,
-                minimum,
-                maximum
+        if not fullscreenSizeOverride then
+            setUserWindowSize(
+                tonumber(appConfig.WindowWidth)
+                    or userWindowWidth,
+                tonumber(appConfig.WindowHeight)
+                    or userWindowHeight,
+                false
             )
-
-        if not fullscreenScaleOverride then
-            windowScale.Scale =
-                userWindowScale
         end
     end
 
@@ -1121,17 +1166,22 @@ source = plainReplace(
             or input.UserInputType
                 == Enum.UserInputType.Touch
         then
-            scaleDragging = true
-            scaleDragInput = input
-            scaleStartPointer = input.Position
-            scaleStartValue = userWindowScale
+            if fullscreenSizeOverride then
+                return
+            end
+
+            resizeDragging = true
+            resizeDragInput = input
+            resizeStartPointer = input.Position
+            resizeStartWidth = userWindowWidth
+            resizeStartHeight = userWindowHeight
         end
     end)
 
     UserInputService.InputChanged:Connect(function(input)
         if
-            not scaleDragging
-            or not scaleStartPointer
+            not resizeDragging
+            or not resizeStartPointer
         then
             return
         end
@@ -1145,7 +1195,7 @@ source = plainReplace(
                 == Enum.UserInputType.Touch
         then
             valid =
-                input == scaleDragInput
+                input == resizeDragInput
         end
 
         if not valid then
@@ -1154,23 +1204,28 @@ source = plainReplace(
 
         local delta =
             input.Position
-            - scaleStartPointer
+            - resizeStartPointer
 
-        local deltaScale =
-            (
-                delta.X
-                + delta.Y
-            )
-            / 720
+        -- The handle is on the bottom-right but the window grows from center.
+        -- Therefore pointer movement is doubled to keep the dragged edge
+        -- visually following the pointer while the opposite edge mirrors it.
+        local width =
+            resizeStartWidth
+            + delta.X * 2
 
-        setUserWindowScale(
-            scaleStartValue + deltaScale,
+        local height =
+            resizeStartHeight
+            + delta.Y * 2
+
+        setUserWindowSize(
+            width,
+            height,
             false
         )
     end)
 
     UserInputService.InputEnded:Connect(function(input)
-        if not scaleDragging then
+        if not resizeDragging then
             return
         end
 
@@ -1183,13 +1238,13 @@ source = plainReplace(
                 == Enum.UserInputType.Touch
         then
             finished =
-                input == scaleDragInput
+                input == resizeDragInput
         end
 
         if finished then
-            scaleDragging = false
-            scaleDragInput = nil
-            scaleStartPointer = nil
+            resizeDragging = false
+            resizeDragInput = nil
+            resizeStartPointer = nil
 
             if appConfig.AutoSaveConfig ~= false then
                 saveConfigFile(appConfig)
@@ -1198,9 +1253,12 @@ source = plainReplace(
     end)
 
     local SIDEBAR_W = 258]],
-    "proportional resize handle"
+    "independent resize handle"
 )
 
+----------------------------------------------------------------
+-- Runtime GUI configuration / themes
+----------------------------------------------------------------
 ----------------------------------------------------------------
 -- Runtime GUI configuration / themes
 ----------------------------------------------------------------
@@ -1612,7 +1670,7 @@ source = plainReplace(
 )
 
 ----------------------------------------------------------------
--- Window animation respects user-selected scale
+-- Window animation
 ----------------------------------------------------------------
 
 source = replaceBetween(
@@ -1642,9 +1700,7 @@ source = replaceBetween(
         animating = true
         shell.Visible = true
         main.GroupTransparency = 0.18
-
-        windowScale.Scale =
-            userWindowScale * 0.955
+        windowScale.Scale = 0.965
 
         shell.Position =
             UDim2.new(
@@ -1699,12 +1755,12 @@ source = replaceBetween(
         local t = tw(
             windowScale,
             TweenInfo.new(
-                0.44,
+                0.38,
                 Enum.EasingStyle.Back,
                 Enum.EasingDirection.Out
             ),
             {
-                Scale = userWindowScale
+                Scale = 1
             }
         )
 
@@ -1765,8 +1821,7 @@ source = replaceBetween(
                 Enum.EasingDirection.In
             ),
             {
-                Scale =
-                    userWindowScale * 0.97
+                Scale = 0.97
             }
         )
 
@@ -1777,14 +1832,12 @@ source = replaceBetween(
             UDim2.fromScale(0.5, 0.5)
 
         main.GroupTransparency = 0
-        windowScale.Scale =
-            userWindowScale
-
+        windowScale.Scale = 1
         animating = false
     end
 
     local window = {}]],
-    "scale-aware window animation"
+    "window animation"
 )
 
 ----------------------------------------------------------------
@@ -1804,10 +1857,8 @@ source = replaceBetween(
     local zoomed = false
     local savedSize
     local savedPosition
-    local savedUserScale
 
     resize.Activated:Connect(function()
-        -- Custom callbacks are additive now; they no longer disable fullscreen.
         if greenCallback then
             task.spawn(greenCallback)
         end
@@ -1817,14 +1868,9 @@ source = replaceBetween(
         end
 
         if not zoomed then
-            savedSize =
-                shell.Size
-
-            savedPosition =
-                shell.Position
-
-            savedUserScale =
-                userWindowScale
+            savedSize = shell.Size
+            savedPosition = shell.Position
+            fullscreenSizeOverride = true
 
             local cam =
                 workspace.CurrentCamera
@@ -1832,11 +1878,6 @@ source = replaceBetween(
             if cam then
                 local v =
                     cam.ViewportSize
-
-                -- Fullscreen uses scale 1 so custom resize scaling does not
-                -- accidentally make the fullscreen shell larger than viewport.
-                fullscreenScaleOverride = true
-                windowScale.Scale = 1
 
                 tw(
                     shell,
@@ -1868,11 +1909,7 @@ source = replaceBetween(
 
             resizeGrip.Visible = false
         else
-            userWindowScale =
-                savedUserScale
-                or userWindowScale
-
-            fullscreenScaleOverride = false
+            fullscreenSizeOverride = false
 
             tw(
                 shell,
@@ -1887,19 +1924,6 @@ source = replaceBetween(
                 }
             )
 
-            tw(
-                windowScale,
-                TweenInfo.new(
-                    0.34,
-                    Enum.EasingStyle.Quint,
-                    Enum.EasingDirection.Out
-                ),
-                {
-                    Scale =
-                        userWindowScale
-                }
-            )
-
             resizeGrip.Visible =
                 appConfig.ShowResizeHandle ~= false
         end
@@ -1911,6 +1935,9 @@ source = replaceBetween(
     "green fullscreen"
 )
 
+----------------------------------------------------------------
+-- Public window configuration API
+----------------------------------------------------------------
 ----------------------------------------------------------------
 -- Public window configuration API
 ----------------------------------------------------------------
@@ -1935,9 +1962,45 @@ source = plainReplace(
         return saveConfigFile(appConfig)
     end
 
+    function window:SetSize(width, height, skipSave)
+        setUserWindowSize(
+            width,
+            height,
+            false
+        )
+
+        if
+            not skipSave
+            and appConfig.AutoSaveConfig ~= false
+        then
+            saveConfigFile(appConfig)
+        end
+
+        return window
+    end
+
+    function window:GetSize()
+        return
+            userWindowWidth,
+            userWindowHeight
+    end
+
+    -- Backward compatibility only.
+    -- This still changes both dimensions from the original 820x650 baseline,
+    -- but the resize handle itself is no longer proportional.
     function window:SetScale(scale, skipSave)
-        setUserWindowScale(
-            scale,
+        scale =
+            math.clamp(
+                tonumber(scale) or 1,
+                0.50,
+                1.80
+            )
+
+        appConfig.WindowScale = scale
+
+        setUserWindowSize(
+            BASE_WINDOW_WIDTH * scale,
+            BASE_WINDOW_HEIGHT * scale,
             false
         )
 
@@ -1952,7 +2015,11 @@ source = plainReplace(
     end
 
     function window:GetScale()
-        return userWindowScale
+        return
+            math.min(
+                userWindowWidth / BASE_WINDOW_WIDTH,
+                userWindowHeight / BASE_WINDOW_HEIGHT
+            )
     end
 
     function window:SetConfig(key, value, skipSave)
@@ -4613,41 +4680,53 @@ local guiSettingsPageCode = [[    ----------------------------------------------
         )
 
         ------------------------------------------------------------
-        -- 窗口比例
+        -- 窗口大小
         ------------------------------------------------------------
 
-        guiSettingsPage:Divider("窗口比例")
+        guiSettingsPage:Divider("窗口大小")
 
         guiSettingsPage:Slider(
-            "GUI 比例",
-            65,
-            145,
-            math.floor(
-                (
-                    tonumber(
-                        appConfig.WindowScale
-                    )
-                    or 1
-                )
-                * 100
-                + 0.5
-            ),
+            "窗口宽度",
+            tonumber(appConfig.MinWindowWidth) or 560,
+            tonumber(appConfig.MaxWindowWidth) or 1380,
+            tonumber(appConfig.WindowWidth) or 820,
             function(value)
-                window:SetScale(
-                    value / 100,
+                window:SetSize(
+                    value,
+                    userWindowHeight,
                     true
                 )
             end,
             {
-                Step = 1,
+                Step = 10,
                 ShowSteps = false,
                 ShowValue = true,
-                Suffix = "%",
+                Suffix = " px",
+            }
+        )
+
+        guiSettingsPage:Slider(
+            "窗口高度",
+            tonumber(appConfig.MinWindowHeight) or 430,
+            tonumber(appConfig.MaxWindowHeight) or 980,
+            tonumber(appConfig.WindowHeight) or 650,
+            function(value)
+                window:SetSize(
+                    userWindowWidth,
+                    value,
+                    true
+                )
+            end,
+            {
+                Step = 10,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = " px",
             }
         )
 
         guiSettingsPage:Switch(
-            "显示右下角缩放手柄",
+            "显示右下角大小手柄",
             appConfig.ShowResizeHandle ~= false,
             function(value)
                 window:SetConfig(
@@ -4657,11 +4736,25 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
-        guiSettingsPage:Label(
-            "也可以直接拖动窗口右下角的小手柄。缩放使用 UIScale，"
-            .. "所以文字、图标、Switch、Slider 等控件会一起按比例变化。"
+        guiSettingsPage:Button(
+            "恢复默认窗口大小",
+            function()
+                window:SetSize(
+                    820,
+                    650
+                )
+            end
         )
 
+        guiSettingsPage:Label(
+            "拖动右下角时宽和高分别计算：只横着拖只改变宽度，"
+            .. "只竖着拖只改变高度。窗口中心保持不动，所以宽度会向左右"
+            .. "两边同时增长，高度会向上下两边同时增长。"
+        )
+
+        ------------------------------------------------------------
+        -- 灵动岛
+        ------------------------------------------------------------
         ------------------------------------------------------------
         -- 灵动岛
         ------------------------------------------------------------
@@ -4875,7 +4968,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
 
         guiSettingsPage:Label(
             "脚本作者也可以在 init() 的第 5 个参数传入配置表，"
-            .. "例如 ConfigFolder、Theme、SidebarTransparency、WindowScale、"
+            .. "例如 ConfigFolder、Theme、SidebarTransparency、WindowWidth、WindowHeight、"
             .. "IslandText、DropdownTransparent 等；"
             .. "显式参数优先级高于配置文件。",
             {
