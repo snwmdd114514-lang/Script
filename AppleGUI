@@ -11,6 +11,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local TextService = game:GetService("TextService")
+local AssetService = game:GetService("AssetService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -241,6 +242,198 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
     scrgui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     protect(scrgui)
     scrgui.Parent = guiParent
+
+    ------------------------------------------------------------------------
+    -- Cached micro Liquid Glass renderer
+    --
+    -- The full FPS demo proved EditableImage works in this executor. For the
+    -- library we do NOT run a per-frame 128x48 pixel pass for every widget.
+    -- Instead, each glass style is rendered once into a tiny EditableImage and
+    -- then reused by every matching control. This keeps the liquid-glass edge,
+    -- chromatic fringe and one frosted layer while making the steady-state cost
+    -- effectively just normal ImageLabels/tweens.
+    ------------------------------------------------------------------------
+    local glassCache = {}
+    local glassOwnedImages = {}
+
+    local function gClamp(x, a, b)
+        if x < a then return a end
+        if x > b then return b end
+        return x
+    end
+
+    local function gLerp(a, b, t)
+        return a + (b - a) * t
+    end
+
+    local function gRead(buf, w, h, x, y, c)
+        x = gClamp(math.floor(x + 0.5), 0, w - 1)
+        y = gClamp(math.floor(y + 0.5), 0, h - 1)
+        return buffer.readu8(buf, (y * w + x) * 4 + c)
+    end
+
+    local function getGlassTexture(style)
+        if glassCache[style] then
+            return glassCache[style]
+        end
+
+        local cfg
+        if style == "knob" then
+            cfg = {w = 40, h = 40, alpha = 188, frost = 0.20, shift = 3.8, blur = 0.70, chroma = 0.65}
+        elseif style == "toast" then
+            cfg = {w = 128, h = 32, alpha = 132, frost = 0.24, shift = 3.0, blur = 1.35, chroma = 0.55}
+        elseif style == "modal" then
+            cfg = {w = 128, h = 88, alpha = 174, frost = 0.27, shift = 3.5, blur = 1.45, chroma = 0.60}
+        else -- menu / generic panel
+            cfg = {w = 112, h = 56, alpha = 148, frost = 0.23, shift = 3.3, blur = 1.15, chroma = 0.60}
+        end
+
+        local okImage, editable = pcall(function()
+            return AssetService:CreateEditableImage({Size = Vector2.new(cfg.w, cfg.h)})
+        end)
+        if not okImage or not editable then
+            warn("[AppleSettingsUI] EditableImage glass unavailable:", editable)
+            glassCache[style] = false
+            return nil
+        end
+
+        local src = buffer.create(cfg.w * cfg.h * 4)
+        local out = buffer.create(cfg.w * cfg.h * 4)
+
+        -- Small high-frequency source field. It is intentionally subtle because
+        -- the image is alpha-blended over the real UI beneath it.
+        for y = 0, cfg.h - 1 do
+            local v = y / math.max(1, cfg.h - 1)
+            for x = 0, cfg.w - 1 do
+                local u = x / math.max(1, cfg.w - 1)
+                local wave = math.sin(u * 10.0 + v * 4.0) * 9 + math.cos(v * 9.0 - u * 2.0) * 7
+                local r = 205 + 31 * u + wave
+                local g = 218 + 23 * (1 - math.abs(u - 0.5) * 1.55) + wave * 0.55
+                local b = 238 - 17 * u + wave * 0.8
+                if (x % math.max(7, math.floor(cfg.w / 9))) < 1 then
+                    r, g, b = r + 22, g + 22, b + 22
+                end
+                local i = (y * cfg.w + x) * 4
+                buffer.writeu8(src, i, gClamp(math.floor(r + 0.5), 0, 255))
+                buffer.writeu8(src, i + 1, gClamp(math.floor(g + 0.5), 0, 255))
+                buffer.writeu8(src, i + 2, gClamp(math.floor(b + 0.5), 0, 255))
+                buffer.writeu8(src, i + 3, 255)
+            end
+        end
+
+        -- One-time lens reconstruction + 5-tap frost blur.
+        for y = 0, cfg.h - 1 do
+            for x = 0, cfg.w - 1 do
+                local nx = ((x + 0.5) / cfg.w) * 2 - 1
+                local ny = ((y + 0.5) / cfg.h) * 2 - 1
+                local aspect = cfg.w / cfg.h
+                local ay = ny * math.min(2.25, aspect) * 0.70
+                local dist = math.sqrt(nx * nx + ay * ay)
+                local ring = 1 - gClamp(math.abs(dist - 0.82) / 0.26, 0, 1)
+                ring = ring * ring
+                local len = math.max(0.001, math.sqrt(nx * nx + ny * ny))
+                local sx = x - (nx / len) * ring * cfg.shift
+                local sy = y - (ny / len) * ring * cfg.shift
+
+                local function blurred(channel, chroma)
+                    local px = sx + chroma
+                    local d = cfg.blur
+                    return (
+                        gRead(src, cfg.w, cfg.h, px, sy, channel) * 0.36 +
+                        gRead(src, cfg.w, cfg.h, px - d, sy, channel) * 0.16 +
+                        gRead(src, cfg.w, cfg.h, px + d, sy, channel) * 0.16 +
+                        gRead(src, cfg.w, cfg.h, px, sy - d, channel) * 0.16 +
+                        gRead(src, cfg.w, cfg.h, px, sy + d, channel) * 0.16
+                    )
+                end
+
+                local r = blurred(0, -cfg.chroma)
+                local g = blurred(1, 0)
+                local b = blurred(2, cfg.chroma)
+
+                local frost = cfg.frost + ring * 0.08
+                r, g, b = gLerp(r, 255, frost), gLerp(g, 255, frost), gLerp(b, 255, frost)
+
+                -- Apple-like specular top rim and a faint lower falloff.
+                local top = gClamp(1 - math.abs((y / cfg.h) - 0.11) / 0.12, 0, 1) * 0.20
+                local side = gClamp(1 - math.abs((x / cfg.w) - 0.07) / 0.08, 0, 1) * 0.06
+                local spec = math.max(top, side)
+                r, g, b = gLerp(r, 255, spec), gLerp(g, 255, spec), gLerp(b, 255, spec)
+                local lower = gClamp(((y / cfg.h) - 0.78) / 0.22, 0, 1) * 0.06
+                r, g, b = r * (1 - lower), g * (1 - lower), b * (1 - lower)
+
+                local i = (y * cfg.w + x) * 4
+                buffer.writeu8(out, i, gClamp(math.floor(r + 0.5), 0, 255))
+                buffer.writeu8(out, i + 1, gClamp(math.floor(g + 0.5), 0, 255))
+                buffer.writeu8(out, i + 2, gClamp(math.floor(b + 0.5), 0, 255))
+                buffer.writeu8(out, i + 3, gClamp(math.floor(cfg.alpha + ring * 18), 0, 255))
+            end
+        end
+
+        editable:WritePixelsBuffer(Vector2.zero, Vector2.new(cfg.w, cfg.h), out)
+
+        local okContent, content = pcall(function()
+            return Content.fromObject(editable)
+        end)
+        if not okContent then
+            editable:Destroy()
+            glassCache[style] = false
+            return nil
+        end
+
+        table.insert(glassOwnedImages, editable)
+        glassCache[style] = content
+        return content
+    end
+
+    local function attachLiquidGlass(parentObject, style, z, cornerRadius, imageTransparency, frostTransparency)
+        local content = getGlassTexture(style)
+        if not content then return nil, nil end
+
+        parentObject.ClipsDescendants = true
+
+        local glassImage = Instance.new("ImageLabel")
+        glassImage.Name = "LiquidGlassLayer"
+        glassImage.Parent = parentObject
+        glassImage.Size = UDim2.fromScale(1, 1)
+        glassImage.BackgroundTransparency = 1
+        glassImage.BorderSizePixel = 0
+        glassImage.ImageContent = content
+        glassImage.ImageTransparency = imageTransparency or 0
+        glassImage.ScaleType = Enum.ScaleType.Stretch
+        glassImage.ResampleMode = Enum.ResamplerMode.Default
+        glassImage.ZIndex = z or (parentObject.ZIndex + 1)
+        round(glassImage, cornerRadius or 16)
+
+        -- The requested single frosted layer. It stays extremely light because
+        -- the EditableImage already performs a small 5-tap blur.
+        local frost = Instance.new("Frame")
+        frost.Name = "FrostLayer"
+        frost.Parent = parentObject
+        frost.Size = UDim2.fromScale(1, 1)
+        frost.BackgroundColor3 = Color3.fromRGB(248, 250, 255)
+        frost.BackgroundTransparency = frostTransparency or 0.84
+        frost.BorderSizePixel = 0
+        frost.ZIndex = (z or parentObject.ZIndex + 1) + 1
+        round(frost, cornerRadius or 16)
+
+        local fg = Instance.new("UIGradient")
+        fg.Parent = frost
+        fg.Rotation = 92
+        fg.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.18),
+            NumberSequenceKeypoint.new(0.36, 0.62),
+            NumberSequenceKeypoint.new(1, 0.78),
+        })
+
+        return glassImage, frost
+    end
+
+    scrgui.Destroying:Connect(function()
+        for _, editable in ipairs(glassOwnedImages) do
+            pcall(function() editable:Destroy() end)
+        end
+    end)
 
     ------------------------------------------------------------------------
     -- Dynamic Island launcher
@@ -821,13 +1014,16 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         local card = Instance.new("CanvasGroup")
         card.Parent = holder
         card.Size = UDim2.fromScale(1, 1)
-        card.BackgroundColor3 = Color3.fromRGB(246, 246, 247)
+        card.BackgroundColor3 = Color3.fromRGB(246, 248, 252)
+        card.BackgroundTransparency = 0.46
         card.BorderSizePixel = 0
         card.GroupTransparency = 1
         card.ZIndex = 952
+        card.ClipsDescendants = true
         round(card, 26)
-        stroke(card, C.Black, 0.80, 0.8)
-        addTopHighlight(card, 36, 954, 0.18)
+        local modalGlass, modalFrost = attachLiquidGlass(card, "modal", 953, 26, 0.04, 0.80)
+        stroke(card, C.Black, 0.82, 0.8)
+        addTopHighlight(card, 36, 954, 0.12)
 
         local cardScale = Instance.new("UIScale")
         cardScale.Scale = 0.90
@@ -948,13 +1144,16 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         local toast = Instance.new("CanvasGroup")
         toast.Parent = holder
         toast.Size = UDim2.fromScale(1, 1)
-        toast.BackgroundColor3 = Color3.fromRGB(248, 248, 249)
-        toast.GroupTransparency = 0.1
+        toast.BackgroundColor3 = Color3.fromRGB(246, 249, 255)
+        toast.BackgroundTransparency = 0.80
+        toast.GroupTransparency = 0
         toast.BorderSizePixel = 0
         toast.ZIndex = 701
+        toast.ClipsDescendants = true
         round(toast, 17)
-        stroke(toast, C.Black, 0.84, 0.8)
-        addTopHighlight(toast, 26, 703, 0.20)
+        local toastGlass, toastFrost = attachLiquidGlass(toast, "toast", 702, 17, 0.02, 0.86)
+        stroke(toast, C.Black, 0.86, 0.8)
+        addTopHighlight(toast, 26, 705, 0.15)
 
         local x = 16
         if icon and icon ~= "" then
@@ -1337,32 +1536,76 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             knob.BackgroundTransparency = 0
             knob.BorderSizePixel = 0
             knob.ZIndex = 24
+            knob.ClipsDescendants = true
             circle(knob)
+            local knobGlass, knobFrost = attachLiquidGlass(knob, "knob", 25, 999, 1, 1)
             local knobDark = stroke(knob, Color3.fromRGB(20, 20, 22), 0.90, 0.8)
             local knobLight = stroke(knob, C.White, 1, 1)
 
+            local knobScale = Instance.new("UIScale")
+            knobScale.Scale = 1
+            knobScale.Parent = knobHolder
+
             local hovering = false
+            local knobBusy = false
+
+            -- Same three-stage jelly pulse as the Dynamic Island. It ends a bit
+            -- enlarged while hovered, then settles back to 1x on mouse leave.
+            local function knobJelly()
+                if knobBusy then return end
+                knobBusy = true
+                local a = tw(knobScale, TweenInfo.new(0.075, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1.18})
+                a.Completed:Wait()
+                local b = tw(knobScale, TweenInfo.new(0.085, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {Scale = 0.96})
+                b.Completed:Wait()
+                local c = tw(knobScale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = hovering and 1.08 or 1})
+                c.Completed:Wait()
+                knobBusy = false
+            end
+
             local function visual(animate)
                 local info = TweenInfo.new(animate and 0.18 or 0, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
                 tw(track, info, {BackgroundColor3 = mode and C.Blue or C.SwitchOff})
                 tw(knobHolder, TweenInfo.new(animate and 0.24 or 0, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
                     Position = mode and UDim2.new(1, -15.5, 0.5, 0) or UDim2.new(0, 15.5, 0.5, 0)
                 })
-                -- Only the knob becomes translucent/glass-like on hover/press.
-                tw(knob, info, {BackgroundTransparency = hovering and 0.30 or 0})
-                tw(knobDark, info, {Transparency = hovering and 0.72 or 0.90})
-                tw(knobLight, info, {Transparency = hovering and 0.46 or 1})
-                tw(knobShadow, info, {ImageTransparency = hovering and 0.84 or 0.90})
+                tw(knob, info, {BackgroundTransparency = hovering and 0.72 or 0})
+                tw(knobDark, info, {Transparency = hovering and 0.68 or 0.90})
+                tw(knobLight, info, {Transparency = hovering and 0.28 or 1})
+                tw(knobShadow, info, {ImageTransparency = hovering and 0.81 or 0.90})
+                if knobGlass then
+                    tw(knobGlass, info, {ImageTransparency = hovering and 0.02 or 1})
+                end
+                if knobFrost then
+                    tw(knobFrost, info, {BackgroundTransparency = hovering and 0.76 or 1})
+                end
+                if not hovering and animate then
+                    tw(knobScale, TweenInfo.new(0.20, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
+                end
             end
 
-            hit.MouseEnter:Connect(function() hovering = true; visual(true) end)
-            hit.MouseLeave:Connect(function() hovering = false; visual(true) end)
+            hit.MouseEnter:Connect(function()
+                hovering = true
+                visual(true)
+                task.spawn(knobJelly)
+            end)
+            hit.MouseLeave:Connect(function()
+                hovering = false
+                visual(true)
+            end)
             hit.InputBegan:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.Touch then hovering = true; visual(true) end
+                if input.UserInputType == Enum.UserInputType.Touch then
+                    hovering = true
+                    visual(true)
+                    task.spawn(knobJelly)
+                end
             end)
             hit.InputEnded:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.Touch then
-                    task.delay(0.10, function() hovering = false; visual(true) end)
+                    task.delay(0.12, function()
+                        hovering = false
+                        visual(true)
+                    end)
                 end
             end)
             hit.Activated:Connect(function()
@@ -1433,22 +1676,34 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             local menu = Instance.new("CanvasGroup")
             menu.Parent = menuHolder
             menu.Size = UDim2.fromScale(1, 1)
-            menu.BackgroundColor3 = Color3.fromRGB(249, 249, 250)
+            menu.BackgroundColor3 = Color3.fromRGB(244, 248, 255)
+            menu.BackgroundTransparency = 0.72
             menu.BorderSizePixel = 0
             menu.GroupTransparency = 0
             menu.ZIndex = 981
+            menu.ClipsDescendants = true
             round(menu, 15)
-            stroke(menu, C.Black, 0.82, 0.8)
-            addTopHighlight(menu, 24, 983, 0.18)
+            local menuGlass, menuFrost = attachLiquidGlass(menu, "menu", 982, 15, 0.02, 0.84)
+            stroke(menu, C.Black, 0.84, 0.8)
+            addTopHighlight(menu, 24, 986, 0.12)
+
+            -- Keep layout objects in their own content frame so the glass layers
+            -- are never repositioned by UIListLayout.
+            local menuItems = Instance.new("Frame")
+            menuItems.Name = "Items"
+            menuItems.Parent = menu
+            menuItems.Size = UDim2.fromScale(1, 1)
+            menuItems.BackgroundTransparency = 1
+            menuItems.ZIndex = 984
 
             local menuLayout = Instance.new("UIListLayout")
-            menuLayout.Parent = menu
+            menuLayout.Parent = menuItems
             menuLayout.SortOrder = Enum.SortOrder.LayoutOrder
             menuLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
             menuLayout.Padding = UDim.new(0, 0)
 
             local menuPad = Instance.new("UIPadding")
-            menuPad.Parent = menu
+            menuPad.Parent = menuItems
             menuPad.PaddingTop = UDim.new(0, 5)
             menuPad.PaddingBottom = UDim.new(0, 5)
             menuPad.PaddingLeft = UDim.new(0, 5)
@@ -1494,7 +1749,7 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
 
             for _, option in ipairs(options) do
                 local item = Instance.new("TextButton")
-                item.Parent = menu
+                item.Parent = menuItems
                 item.Size = UDim2.new(1, 0, 0, 38)
                 item.BackgroundColor3 = C.White
                 item.BackgroundTransparency = 1
@@ -1507,7 +1762,7 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
                 item.ZIndex = 984
                 round(item, 10)
                 item.MouseEnter:Connect(function()
-                    tw(item, TweenInfo.new(0.10), {BackgroundTransparency = 0, BackgroundColor3 = Color3.fromRGB(232, 239, 250)})
+                    tw(item, TweenInfo.new(0.10), {BackgroundTransparency = 0.54, BackgroundColor3 = Color3.fromRGB(232, 239, 250)})
                 end)
                 item.MouseLeave:Connect(function()
                     tw(item, TweenInfo.new(0.12), {BackgroundTransparency = 1})
