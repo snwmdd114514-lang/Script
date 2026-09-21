@@ -12,6 +12,7 @@ local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local TextService = game:GetService("TextService")
 local AssetService = game:GetService("AssetService")
+local CaptureService = game:GetService("CaptureService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -244,17 +245,25 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
     scrgui.Parent = guiParent
 
     ------------------------------------------------------------------------
-    -- Cached micro Liquid Glass renderer
+    -- Event-driven Snapshot Liquid Glass
     --
-    -- The full FPS demo proved EditableImage works in this executor. For the
-    -- library we do NOT run a per-frame 128x48 pixel pass for every widget.
-    -- Instead, each glass style is rendered once into a tiny EditableImage and
-    -- then reused by every matching control. This keeps the liquid-glass edge,
-    -- chromatic fringe and one frosted layer while making the steady-state cost
-    -- effectively just normal ImageLabels/tweens.
+    -- This is intentionally NOT a permanent per-frame renderer.
+    --
+    -- When a glass surface actually needs a new backdrop (first hover/open,
+    -- resized/repositioned, switch state changed, new notification, etc.):
+    --   1) temporarily hide only that glass surface,
+    --   2) take one screen snapshot,
+    --   3) read only the tiny rectangle underneath the control,
+    --   4) apply lens displacement + one 5-tap frosted blur into EditableImage,
+    --   5) freeze the result.
+    --
+    -- If nothing changed, Refresh() simply reuses the cached EditableImage.
+    -- No RenderStepped pixel loop is used for the liquid glass itself.
     ------------------------------------------------------------------------
-    local glassCache = {}
     local glassOwnedImages = {}
+    local glassGeometryCache = {}
+    local captureQueue = {}
+    local captureBusy = false
 
     local function gClamp(x, a, b)
         if x < a then return a end
@@ -266,130 +275,300 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         return a + (b - a) * t
     end
 
-    local function gRead(buf, w, h, x, y, c)
-        x = gClamp(math.floor(x + 0.5), 0, w - 1)
-        y = gClamp(math.floor(y + 0.5), 0, h - 1)
-        return buffer.readu8(buf, (y * w + x) * 4 + c)
+    local function gRound(x)
+        return math.floor(x + 0.5)
     end
 
-    local function getGlassTexture(style)
-        if glassCache[style] then
-            return glassCache[style]
-        end
-
-        local cfg
+    local function styleConfig(style)
         if style == "knob" then
-            cfg = {w = 40, h = 40, alpha = 188, frost = 0.20, shift = 3.8, blur = 0.70, chroma = 0.65}
+            return {
+                maxAxis = 52,
+                shift = 0.145,
+                frost = 0.14,
+                blur = 1.15,
+                alpha = 218,
+                spec = 0.28,
+                chroma = 0.10,
+            }
         elseif style == "toast" then
-            cfg = {w = 128, h = 32, alpha = 132, frost = 0.24, shift = 3.0, blur = 1.35, chroma = 0.55}
+            return {
+                maxAxis = 128,
+                shift = 0.060,
+                frost = 0.12,
+                blur = 1.65,
+                alpha = 176,
+                spec = 0.20,
+                chroma = 0.07,
+            }
         elseif style == "modal" then
-            cfg = {w = 128, h = 88, alpha = 174, frost = 0.27, shift = 3.5, blur = 1.45, chroma = 0.60}
-        else -- menu / generic panel
-            cfg = {w = 112, h = 56, alpha = 148, frost = 0.23, shift = 3.3, blur = 1.15, chroma = 0.60}
+            return {
+                maxAxis = 128,
+                shift = 0.052,
+                frost = 0.15,
+                blur = 1.85,
+                alpha = 194,
+                spec = 0.20,
+                chroma = 0.06,
+            }
+        else -- menu / generic popover
+            return {
+                maxAxis = 128,
+                shift = 0.070,
+                frost = 0.13,
+                blur = 1.55,
+                alpha = 184,
+                spec = 0.23,
+                chroma = 0.07,
+            }
         end
+    end
 
-        local okImage, editable = pcall(function()
-            return AssetService:CreateEditableImage({Size = Vector2.new(cfg.w, cfg.h)})
-        end)
-        if not okImage or not editable then
-            warn("[AppleSettingsUI] EditableImage glass unavailable:", editable)
-            glassCache[style] = false
-            return nil
+    local function chooseOutputSize(style, absSize)
+        local cfg = styleConfig(style)
+        local biggest = math.max(absSize.X, absSize.Y, 1)
+        local scale = math.min(1, cfg.maxAxis / biggest)
+        local w = math.max(16, math.floor(absSize.X * scale + 0.5))
+        local h = math.max(16, math.floor(absSize.Y * scale + 0.5))
+        if style == "knob" then
+            w, h = 48, 48
         end
+        return w, h
+    end
 
-        local src = buffer.create(cfg.w * cfg.h * 4)
-        local out = buffer.create(cfg.w * cfg.h * 4)
+    local function getGeometry(style, w, h)
+        local key = style .. ":" .. tostring(w) .. "x" .. tostring(h)
+        local cached = glassGeometryCache[key]
+        if cached then return cached end
 
-        -- Small high-frequency source field. It is intentionally subtle because
-        -- the image is alpha-blended over the real UI beneath it.
-        for y = 0, cfg.h - 1 do
-            local v = y / math.max(1, cfg.h - 1)
-            for x = 0, cfg.w - 1 do
-                local u = x / math.max(1, cfg.w - 1)
-                local wave = math.sin(u * 10.0 + v * 4.0) * 9 + math.cos(v * 9.0 - u * 2.0) * 7
-                local r = 205 + 31 * u + wave
-                local g = 218 + 23 * (1 - math.abs(u - 0.5) * 1.55) + wave * 0.55
-                local b = 238 - 17 * u + wave * 0.8
-                if (x % math.max(7, math.floor(cfg.w / 9))) < 1 then
-                    r, g, b = r + 22, g + 22, b + 22
-                end
-                local i = (y * cfg.w + x) * 4
-                buffer.writeu8(src, i, gClamp(math.floor(r + 0.5), 0, 255))
-                buffer.writeu8(src, i + 1, gClamp(math.floor(g + 0.5), 0, 255))
-                buffer.writeu8(src, i + 2, gClamp(math.floor(b + 0.5), 0, 255))
-                buffer.writeu8(src, i + 3, 255)
+        local cfg = styleConfig(style)
+        local count = w * h
+        local dirX = buffer.create(count * 4)
+        local dirY = buffer.create(count * 4)
+        local ringMap = buffer.create(count)
+        local frostMap = buffer.create(count)
+        local specMap = buffer.create(count)
+        local lowerMap = buffer.create(count)
+
+        for y = 0, h - 1 do
+            for x = 0, w - 1 do
+                local p = y * w + x
+                local f = p * 4
+                local nx = ((x + 0.5) / w) * 2 - 1
+                local ny = ((y + 0.5) / h) * 2 - 1
+
+                local aspect = w / math.max(1, h)
+                local ay = ny * math.min(2.30, aspect) * 0.70
+                local dist = math.sqrt(nx * nx + ay * ay)
+                local ring = 1 - gClamp(math.abs(dist - 0.80) / 0.25, 0, 1)
+                ring = ring * ring
+
+                local len = math.max(0.001, math.sqrt(nx * nx + ny * ny))
+                buffer.writef32(dirX, f, nx / len)
+                buffer.writef32(dirY, f, ny / len)
+                buffer.writeu8(ringMap, p, gRound(ring * 255))
+
+                local frost = cfg.frost + ring * 0.055
+                buffer.writeu8(frostMap, p, gRound(gClamp(frost, 0, 1) * 255))
+
+                local top = gClamp(1 - math.abs((y / h) - 0.10) / 0.13, 0, 1) * cfg.spec
+                local left = gClamp(1 - math.abs((x / w) - 0.06) / 0.07, 0, 1) * (cfg.spec * 0.28)
+                buffer.writeu8(specMap, p, gRound(math.max(top, left) * 255))
+
+                local lower = gClamp(((y / h) - 0.80) / 0.20, 0, 1) * 0.055
+                buffer.writeu8(lowerMap, p, gRound(lower * 255))
             end
         end
 
-        -- One-time lens reconstruction + 5-tap frost blur.
-        for y = 0, cfg.h - 1 do
-            for x = 0, cfg.w - 1 do
-                local nx = ((x + 0.5) / cfg.w) * 2 - 1
-                local ny = ((y + 0.5) / cfg.h) * 2 - 1
-                local aspect = cfg.w / cfg.h
-                local ay = ny * math.min(2.25, aspect) * 0.70
-                local dist = math.sqrt(nx * nx + ay * ay)
-                local ring = 1 - gClamp(math.abs(dist - 0.82) / 0.26, 0, 1)
-                ring = ring * ring
-                local len = math.max(0.001, math.sqrt(nx * nx + ny * ny))
-                local sx = x - (nx / len) * ring * cfg.shift
-                local sy = y - (ny / len) * ring * cfg.shift
+        cached = {
+            dirX = dirX,
+            dirY = dirY,
+            ring = ringMap,
+            frost = frostMap,
+            spec = specMap,
+            lower = lowerMap,
+        }
+        glassGeometryCache[key] = cached
+        return cached
+    end
 
-                local function blurred(channel, chroma)
-                    local px = sx + chroma
-                    local d = cfg.blur
-                    return (
-                        gRead(src, cfg.w, cfg.h, px, sy, channel) * 0.36 +
-                        gRead(src, cfg.w, cfg.h, px - d, sy, channel) * 0.16 +
-                        gRead(src, cfg.w, cfg.h, px + d, sy, channel) * 0.16 +
-                        gRead(src, cfg.w, cfg.h, px, sy - d, channel) * 0.16 +
-                        gRead(src, cfg.w, cfg.h, px, sy + d, channel) * 0.16
-                    )
+    local function queueScreenCapture(hiddenObjects, callback)
+        table.insert(captureQueue, {
+            hidden = hiddenObjects or {},
+            callback = callback,
+        })
+
+        local function pump()
+            if captureBusy or #captureQueue == 0 then return end
+            captureBusy = true
+            local request = table.remove(captureQueue, 1)
+
+            task.spawn(function()
+                local oldVisible = {}
+                for _, object in ipairs(request.hidden) do
+                    if object and object.Parent and object:IsA("GuiObject") then
+                        oldVisible[object] = object.Visible
+                        object.Visible = false
+                    end
                 end
 
+                -- Give the renderer one frame so the capture definitely sees
+                -- the unobstructed pixels underneath the target surface.
+                RunService.RenderStepped:Wait()
+
+                local finished = false
+
+                local function restore()
+                    for object, wasVisible in pairs(oldVisible) do
+                        if object and object.Parent then
+                            object.Visible = wasVisible
+                        end
+                    end
+                end
+
+                local function finish(sourceEditable, err)
+                    if finished then
+                        if sourceEditable then
+                            pcall(function() sourceEditable:Destroy() end)
+                        end
+                        return
+                    end
+                    finished = true
+                    restore()
+                    pcall(request.callback, sourceEditable, err)
+                    if sourceEditable then
+                        pcall(function() sourceEditable:Destroy() end)
+                    end
+                    captureBusy = false
+                    pump()
+                end
+
+                local okStart, startErr = pcall(function()
+                    CaptureService:CaptureScreenshot(function(contentId)
+                        restore()
+                        task.spawn(function()
+                            local okLoad, loaded = pcall(function()
+                                return AssetService:CreateEditableImageAsync(Content.fromUri(contentId))
+                            end)
+                            if okLoad and loaded then
+                                finish(loaded, nil)
+                            else
+                                finish(nil, loaded)
+                            end
+                        end)
+                    end)
+                end)
+
+                if not okStart then
+                    finish(nil, startErr)
+                    return
+                end
+
+                task.delay(4, function()
+                    if not finished then
+                        finish(nil, "CaptureService timeout")
+                    end
+                end)
+            end)
+        end
+
+        pump()
+    end
+
+    local function renderCapturedRegion(sourceEditable, rectPos, rectSize, style, destination)
+        if not sourceEditable or not destination then return false end
+
+        local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1, 1)
+        local sourceSize = sourceEditable.Size
+        if sourceSize.X < 1 or sourceSize.Y < 1 then return false end
+
+        local sxScale = sourceSize.X / math.max(1, viewport.X)
+        local syScale = sourceSize.Y / math.max(1, viewport.Y)
+
+        local x0 = math.floor(rectPos.X * sxScale)
+        local y0 = math.floor(rectPos.Y * syScale)
+        local cw = math.max(2, math.floor(rectSize.X * sxScale + 0.5))
+        local ch = math.max(2, math.floor(rectSize.Y * syScale + 0.5))
+
+        x0 = gClamp(x0, 0, math.max(0, sourceSize.X - 2))
+        y0 = gClamp(y0, 0, math.max(0, sourceSize.Y - 2))
+        cw = gClamp(cw, 2, math.max(2, sourceSize.X - x0))
+        ch = gClamp(ch, 2, math.max(2, sourceSize.Y - y0))
+
+        local okRead, crop = pcall(function()
+            return sourceEditable:ReadPixelsBuffer(Vector2.new(x0, y0), Vector2.new(cw, ch))
+        end)
+        if not okRead or not crop then return false end
+
+        local w, h = destination.Size.X, destination.Size.Y
+        local geometry = getGeometry(style, w, h)
+        local cfg = styleConfig(style)
+        local out = buffer.create(w * h * 4)
+
+        local function readCrop(x, y, c)
+            x = gClamp(gRound(x), 0, cw - 1)
+            y = gClamp(gRound(y), 0, ch - 1)
+            return buffer.readu8(crop, (y * cw + x) * 4 + c)
+        end
+
+        for y = 0, h - 1 do
+            local baseV = (y + 0.5) / h
+            for x = 0, w - 1 do
+                local p = y * w + x
+                local f = p * 4
+                local baseU = (x + 0.5) / w
+
+                local ring = buffer.readu8(geometry.ring, p) / 255
+                local dx = buffer.readf32(geometry.dirX, f)
+                local dy = buffer.readf32(geometry.dirY, f)
+
+                local shiftPx = math.min(cw, ch) * cfg.shift * ring
+                local sourceX = baseU * (cw - 1) - dx * shiftPx
+                local sourceY = baseV * (ch - 1) - dy * shiftPx
+
+                local blur = cfg.blur
+                local function blurred(channel, channelShift)
+                    local px = sourceX + channelShift
+                    return
+                        readCrop(px, sourceY, channel) * 0.40
+                        + readCrop(px - blur, sourceY, channel) * 0.15
+                        + readCrop(px + blur, sourceY, channel) * 0.15
+                        + readCrop(px, sourceY - blur, channel) * 0.15
+                        + readCrop(px, sourceY + blur, channel) * 0.15
+                end
+
+                -- Keep chromatic displacement extremely small. The visual cue
+                -- should be lensing/frost, not a rainbow reflection.
                 local r = blurred(0, -cfg.chroma)
                 local g = blurred(1, 0)
                 local b = blurred(2, cfg.chroma)
 
-                local frost = cfg.frost + ring * 0.08
-                r, g, b = gLerp(r, 255, frost), gLerp(g, 255, frost), gLerp(b, 255, frost)
+                local frost = buffer.readu8(geometry.frost, p) / 255
+                local spec = buffer.readu8(geometry.spec, p) / 255
+                local lower = buffer.readu8(geometry.lower, p) / 255
 
-                -- Apple-like specular top rim and a faint lower falloff.
-                local top = gClamp(1 - math.abs((y / cfg.h) - 0.11) / 0.12, 0, 1) * 0.20
-                local side = gClamp(1 - math.abs((x / cfg.w) - 0.07) / 0.08, 0, 1) * 0.06
-                local spec = math.max(top, side)
-                r, g, b = gLerp(r, 255, spec), gLerp(g, 255, spec), gLerp(b, 255, spec)
-                local lower = gClamp(((y / cfg.h) - 0.78) / 0.22, 0, 1) * 0.06
-                r, g, b = r * (1 - lower), g * (1 - lower), b * (1 - lower)
+                r = gLerp(r, 255, frost)
+                g = gLerp(g, 255, frost)
+                b = gLerp(b, 255, frost)
 
-                local i = (y * cfg.w + x) * 4
-                buffer.writeu8(out, i, gClamp(math.floor(r + 0.5), 0, 255))
-                buffer.writeu8(out, i + 1, gClamp(math.floor(g + 0.5), 0, 255))
-                buffer.writeu8(out, i + 2, gClamp(math.floor(b + 0.5), 0, 255))
-                buffer.writeu8(out, i + 3, gClamp(math.floor(cfg.alpha + ring * 18), 0, 255))
+                r = gLerp(r, 255, spec)
+                g = gLerp(g, 255, spec)
+                b = gLerp(b, 255, spec)
+
+                local dark = 1 - lower
+                r, g, b = r * dark, g * dark, b * dark
+
+                buffer.writeu8(out, f, gClamp(gRound(r), 0, 255))
+                buffer.writeu8(out, f + 1, gClamp(gRound(g), 0, 255))
+                buffer.writeu8(out, f + 2, gClamp(gRound(b), 0, 255))
+                buffer.writeu8(out, f + 3, gClamp(cfg.alpha + gRound(ring * 20), 0, 255))
             end
         end
 
-        editable:WritePixelsBuffer(Vector2.zero, Vector2.new(cfg.w, cfg.h), out)
-
-        local okContent, content = pcall(function()
-            return Content.fromObject(editable)
-        end)
-        if not okContent then
-            editable:Destroy()
-            glassCache[style] = false
-            return nil
-        end
-
-        table.insert(glassOwnedImages, editable)
-        glassCache[style] = content
-        return content
+        destination:WritePixelsBuffer(Vector2.zero, Vector2.new(w, h), out)
+        return true
     end
 
     local function attachLiquidGlass(parentObject, style, z, cornerRadius, imageTransparency, frostTransparency)
-        local content = getGlassTexture(style)
-        if not content then return nil, nil end
-
         parentObject.ClipsDescendants = true
 
         local glassImage = Instance.new("ImageLabel")
@@ -398,21 +577,19 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         glassImage.Size = UDim2.fromScale(1, 1)
         glassImage.BackgroundTransparency = 1
         glassImage.BorderSizePixel = 0
-        glassImage.ImageContent = content
-        glassImage.ImageTransparency = imageTransparency or 0
+        glassImage.ImageTransparency = imageTransparency == nil and 1 or imageTransparency
         glassImage.ScaleType = Enum.ScaleType.Stretch
         glassImage.ResampleMode = Enum.ResamplerMode.Default
         glassImage.ZIndex = z or (parentObject.ZIndex + 1)
         round(glassImage, cornerRadius or 16)
 
-        -- The requested single frosted layer. It stays extremely light because
-        -- the EditableImage already performs a small 5-tap blur.
+        -- Exactly one very light frost/tint layer.
         local frost = Instance.new("Frame")
         frost.Name = "FrostLayer"
         frost.Parent = parentObject
         frost.Size = UDim2.fromScale(1, 1)
-        frost.BackgroundColor3 = Color3.fromRGB(248, 250, 255)
-        frost.BackgroundTransparency = frostTransparency or 0.84
+        frost.BackgroundColor3 = Color3.fromRGB(250, 252, 255)
+        frost.BackgroundTransparency = frostTransparency or 0.90
         frost.BorderSizePixel = 0
         frost.ZIndex = (z or parentObject.ZIndex + 1) + 1
         round(frost, cornerRadius or 16)
@@ -421,12 +598,117 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         fg.Parent = frost
         fg.Rotation = 92
         fg.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.18),
-            NumberSequenceKeypoint.new(0.36, 0.62),
-            NumberSequenceKeypoint.new(1, 0.78),
+            NumberSequenceKeypoint.new(0, 0.22),
+            NumberSequenceKeypoint.new(0.38, 0.62),
+            NumberSequenceKeypoint.new(1, 0.82),
         })
 
-        return glassImage, frost
+        local controller = {
+            Dirty = true,
+            Busy = false,
+            HasImage = false,
+            Destination = nil,
+            LastPosition = nil,
+            LastSize = nil,
+            Waiters = {},
+        }
+
+        function controller:MarkDirty()
+            self.Dirty = true
+        end
+
+        function controller:SetShown(shown, glassAlpha, frostAlpha)
+            if not glassImage.Parent then return end
+            glassImage.ImageTransparency = shown and (glassAlpha or 0.02) or 1
+            frost.BackgroundTransparency = shown and (frostAlpha or 0.90) or 1
+        end
+
+        function controller:Refresh(onReady, force)
+            if not parentObject.Parent then return end
+
+            if self.Busy then
+                if onReady then
+                    table.insert(self.Waiters, onReady)
+                end
+                return
+            end
+
+            local rectPos = parentObject.AbsolutePosition
+            local rectSize = parentObject.AbsoluteSize
+            if rectSize.X < 2 or rectSize.Y < 2 then return end
+
+            if self.LastPosition and self.LastSize then
+                if (rectPos - self.LastPosition).Magnitude > 0.75 or (rectSize - self.LastSize).Magnitude > 0.75 then
+                    self.Dirty = true
+                end
+            end
+
+            if self.HasImage and not self.Dirty and not force then
+                if onReady then onReady(true, true) end
+                return
+            end
+
+            self.Busy = true
+            local w, h = chooseOutputSize(style, rectSize)
+
+            if not self.Destination or self.Destination.Size.X ~= w or self.Destination.Size.Y ~= h then
+                if self.Destination then
+                    pcall(function() self.Destination:Destroy() end)
+                end
+                local okCreate, destination = pcall(function()
+                    return AssetService:CreateEditableImage({Size = Vector2.new(w, h)})
+                end)
+                if not okCreate or not destination then
+                    self.Busy = false
+                    if onReady then onReady(false, false) end
+                    return
+                end
+                self.Destination = destination
+                table.insert(glassOwnedImages, destination)
+                local okContent, content = pcall(function()
+                    return Content.fromObject(destination)
+                end)
+                if okContent then
+                    glassImage.ImageContent = content
+                end
+            end
+
+            -- Hide the surface itself for one capture so the snapshot contains
+            -- the pixels genuinely underneath it rather than recursive glass.
+            queueScreenCapture({self.HideObject or parentObject}, function(sourceEditable, err)
+                if not parentObject.Parent then
+                    self.Busy = false
+                    return
+                end
+
+                local okRender = false
+                if sourceEditable and self.Destination then
+                    okRender = renderCapturedRegion(sourceEditable, rectPos, rectSize, style, self.Destination)
+                end
+
+                self.Busy = false
+                if okRender then
+                    self.HasImage = true
+                    self.Dirty = false
+                    self.LastPosition = rectPos
+                    self.LastSize = rectSize
+                else
+                    warn("[AppleSettingsUI] Snapshot liquid glass refresh failed:", err)
+                end
+
+                if onReady then onReady(okRender, false) end
+
+                if #self.Waiters > 0 then
+                    local waiters = self.Waiters
+                    self.Waiters = {}
+                    for _, waiter in ipairs(waiters) do
+                        pcall(waiter, okRender, false)
+                    end
+                end
+            end)
+        end
+
+        return glassImage, frost, controller
     end
 
     scrgui.Destroying:Connect(function()
@@ -1015,13 +1297,15 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         card.Parent = holder
         card.Size = UDim2.fromScale(1, 1)
         card.BackgroundColor3 = Color3.fromRGB(246, 248, 252)
-        card.BackgroundTransparency = 0.46
+        card.BackgroundTransparency = 0.86
         card.BorderSizePixel = 0
         card.GroupTransparency = 1
         card.ZIndex = 952
         card.ClipsDescendants = true
         round(card, 26)
-        local modalGlass, modalFrost = attachLiquidGlass(card, "modal", 953, 26, 0.04, 0.80)
+        local modalGlass, modalFrost, modalGlassCtl = attachLiquidGlass(card, "modal", 953, 26, 1, 1)
+        modalGlassCtl:SetShown(false)
+        modalGlassCtl.HideObject = overlay
         stroke(card, C.Black, 0.82, 0.8)
         addTopHighlight(card, 36, 954, 0.12)
 
@@ -1113,9 +1397,25 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         end
 
         activeModal = overlay
-        tw(overlay, TweenInfo.new(0.18), {BackgroundTransparency = 0.48})
-        tw(card, TweenInfo.new(0.18), {GroupTransparency = 0})
-        tw(cardScale, TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
+        overlay.Visible = false
+
+        -- Snapshot only once for this modal. The entire overlay is hidden from
+        -- the capture, so the glass never photographs itself or the dim layer.
+        modalGlassCtl:Refresh(function(ok)
+            if not overlay.Parent then return end
+            if ok then
+                modalGlassCtl:SetShown(true, 0.04, 0.91)
+            end
+
+            overlay.Visible = true
+            overlay.BackgroundTransparency = 1
+            card.GroupTransparency = 1
+            cardScale.Scale = 0.90
+
+            tw(overlay, TweenInfo.new(0.18), {BackgroundTransparency = 0.56})
+            tw(card, TweenInfo.new(0.18), {GroupTransparency = 0})
+            tw(cardScale, TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
+        end)
     end
 
     function window:Notify(txt1, txt2, b1, icon, callback)
@@ -1145,13 +1445,15 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         toast.Parent = holder
         toast.Size = UDim2.fromScale(1, 1)
         toast.BackgroundColor3 = Color3.fromRGB(246, 249, 255)
-        toast.BackgroundTransparency = 0.80
+        toast.BackgroundTransparency = 0.96
         toast.GroupTransparency = 0
         toast.BorderSizePixel = 0
         toast.ZIndex = 701
         toast.ClipsDescendants = true
         round(toast, 17)
-        local toastGlass, toastFrost = attachLiquidGlass(toast, "toast", 702, 17, 0.02, 0.86)
+        local toastGlass, toastFrost, toastGlassCtl = attachLiquidGlass(toast, "toast", 702, 17, 1, 1)
+        toastGlassCtl:SetShown(false)
+        toastGlassCtl.HideObject = holder
         stroke(toast, C.Black, 0.86, 0.8)
         addTopHighlight(toast, 26, 705, 0.15)
 
@@ -1198,8 +1500,25 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
         b.TextYAlignment = Enum.TextYAlignment.Top
         b.ZIndex = 703
 
-        holder.Position = UDim2.new(1, 28, 0, 62)
-        tw(holder, TweenInfo.new(0.30, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(1, -12, 0, 62)})
+        local finalToastPosition = UDim2.new(1, -12, 0, 62)
+        holder.Position = finalToastPosition
+        holder.Visible = false
+
+        -- New notification = one new capture. Capture at the final resting
+        -- rectangle, then slide the already-frozen glass card onto screen.
+        toastGlassCtl:Refresh(function(ok)
+            if not holder.Parent then return end
+            if ok then
+                toastGlassCtl:SetShown(true, 0.03, 0.93)
+            end
+
+            holder.Position = UDim2.new(1, 28, 0, 62)
+            holder.Visible = true
+            tw(holder, TweenInfo.new(0.30, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                Position = finalToastPosition
+            })
+        end)
+
         task.delay(4, function()
             if holder.Parent then
                 tw(holder, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Position = UDim2.new(1, 30, 0, 62)})
@@ -1499,11 +1818,13 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             l.TextXAlignment = Enum.TextXAlignment.Left
             l.ZIndex = 18
 
+            -- The touch area is intentionally larger than the visual switch,
+            -- especially because the knob becomes 2x while hovered.
             local hit = Instance.new("TextButton")
             hit.Parent = row
             hit.AnchorPoint = Vector2.new(1, 0.5)
             hit.Position = UDim2.new(1, -8, 0.5, 0)
-            hit.Size = UDim2.fromOffset(72, 48)
+            hit.Size = UDim2.fromOffset(78, 64)
             hit.BackgroundTransparency = 1
             hit.Text = ""
             hit.AutoButtonColor = false
@@ -1519,7 +1840,8 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             track.ZIndex = 22
             circle(track)
 
-            -- Real image shadow under the glass knob.
+            -- Normal state matches the supplied reference:
+            -- small solid white ball + a small soft image shadow.
             local knobHolder = Instance.new("Frame")
             knobHolder.Parent = track
             knobHolder.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1527,7 +1849,8 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             knobHolder.Size = UDim2.fromOffset(27, 27)
             knobHolder.BackgroundTransparency = 1
             knobHolder.ZIndex = 23
-            local knobShadow = addShadow(knobHolder, 23, 12, 12, 0.90, true)
+
+            local knobShadow = addShadow(knobHolder, 23, 12, 12, 0.82, true)
 
             local knob = Instance.new("Frame")
             knob.Parent = knobHolder
@@ -1538,8 +1861,14 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             knob.ZIndex = 24
             knob.ClipsDescendants = true
             circle(knob)
-            local knobGlass, knobFrost = attachLiquidGlass(knob, "knob", 25, 999, 1, 1)
-            local knobDark = stroke(knob, Color3.fromRGB(20, 20, 22), 0.90, 0.8)
+
+            -- No pre-baked rainbow texture. This layer is empty until the first
+            -- real snapshot underneath the knob is captured and refracted.
+            local knobGlass, knobFrost, knobGlassCtl = attachLiquidGlass(knob, "knob", 25, 999, 1, 1)
+            knobGlassCtl:SetShown(false)
+            knobGlassCtl.HideObject = knobHolder
+
+            local knobDark = stroke(knob, Color3.fromRGB(22, 22, 24), 0.92, 0.8)
             local knobLight = stroke(knob, C.White, 1, 1)
 
             local knobScale = Instance.new("UIScale")
@@ -1547,73 +1876,129 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             knobScale.Parent = knobHolder
 
             local hovering = false
-            local knobBusy = false
+            local jellyToken = 0
 
-            -- Same three-stage jelly pulse as the Dynamic Island. It ends a bit
-            -- enlarged while hovered, then settles back to 1x on mouse leave.
-            local function knobJelly()
-                if knobBusy then return end
-                knobBusy = true
-                local a = tw(knobScale, TweenInfo.new(0.075, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1.18})
-                a.Completed:Wait()
-                local b = tw(knobScale, TweenInfo.new(0.085, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {Scale = 0.96})
-                b.Completed:Wait()
-                local c = tw(knobScale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = hovering and 1.08 or 1})
-                c.Completed:Wait()
-                knobBusy = false
-            end
-
-            local function visual(animate)
+            local function setTrack(animate)
                 local info = TweenInfo.new(animate and 0.18 or 0, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
                 tw(track, info, {BackgroundColor3 = mode and C.Blue or C.SwitchOff})
                 tw(knobHolder, TweenInfo.new(animate and 0.24 or 0, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
                     Position = mode and UDim2.new(1, -15.5, 0.5, 0) or UDim2.new(0, 15.5, 0.5, 0)
                 })
-                tw(knob, info, {BackgroundTransparency = hovering and 0.72 or 0})
-                tw(knobDark, info, {Transparency = hovering and 0.68 or 0.90})
-                tw(knobLight, info, {Transparency = hovering and 0.28 or 1})
-                tw(knobShadow, info, {ImageTransparency = hovering and 0.81 or 0.90})
-                if knobGlass then
-                    tw(knobGlass, info, {ImageTransparency = hovering and 0.02 or 1})
-                end
-                if knobFrost then
-                    tw(knobFrost, info, {BackgroundTransparency = hovering and 0.76 or 1})
-                end
-                if not hovering and animate then
-                    tw(knobScale, TweenInfo.new(0.20, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
-                end
+            end
+
+            local function showNormalBall(animate)
+                local info = TweenInfo.new(animate and 0.16 or 0, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+                tw(knob, info, {BackgroundTransparency = 0})
+                tw(knobDark, info, {Transparency = 0.92})
+                tw(knobLight, info, {Transparency = 1})
+                tw(knobShadow, info, {ImageTransparency = 0.82})
+                tw(knobGlass, info, {ImageTransparency = 1})
+                tw(knobFrost, info, {BackgroundTransparency = 1})
+            end
+
+            local function showLiquidBall()
+                if not hovering or not knob.Parent then return end
+
+                -- The white disk itself disappears. What remains is the captured
+                -- refracted backdrop + one subtle frost layer + edge highlight.
+                tw(knob, TweenInfo.new(0.13, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                    BackgroundTransparency = 1
+                })
+                tw(knobDark, TweenInfo.new(0.13), {Transparency = 0.72})
+                tw(knobLight, TweenInfo.new(0.13), {Transparency = 0.24})
+                tw(knobShadow, TweenInfo.new(0.13), {ImageTransparency = 0.86})
+                tw(knobGlass, TweenInfo.new(0.14), {ImageTransparency = 0.02})
+                tw(knobFrost, TweenInfo.new(0.14), {BackgroundTransparency = 0.88})
+            end
+
+            local function startHoverJelly()
+                jellyToken += 1
+                local token = jellyToken
+
+                task.spawn(function()
+                    -- Same overshoot/compress/settle language as the Dynamic
+                    -- Island, but the requested final size is exactly 2x.
+                    local a = tw(knobScale, TweenInfo.new(0.075, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 2.14})
+                    a.Completed:Wait()
+                    if token ~= jellyToken or not hovering then return end
+
+                    local b = tw(knobScale, TweenInfo.new(0.085, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {Scale = 1.84})
+                    b.Completed:Wait()
+                    if token ~= jellyToken or not hovering then return end
+
+                    local c = tw(knobScale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 2.00})
+                    c.Completed:Wait()
+                    if token ~= jellyToken or not hovering then return end
+
+                    -- Refresh is event-driven. If this knob's position/size/mode
+                    -- has not changed since its last capture, this call is free
+                    -- and simply reuses the cached EditableImage.
+                    knobGlassCtl:Refresh(function(ok)
+                        if token ~= jellyToken or not hovering then return end
+                        if ok then showLiquidBall() end
+                    end)
+                end)
+            end
+
+            local function endHover()
+                jellyToken += 1
+                showNormalBall(true)
+                tw(knobScale, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
             end
 
             hit.MouseEnter:Connect(function()
+                if hovering then return end
                 hovering = true
-                visual(true)
-                task.spawn(knobJelly)
+                startHoverJelly()
             end)
+
             hit.MouseLeave:Connect(function()
+                if not hovering then return end
                 hovering = false
-                visual(true)
+                endHover()
             end)
+
             hit.InputBegan:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.Touch then
+                if input.UserInputType == Enum.UserInputType.Touch and not hovering then
                     hovering = true
-                    visual(true)
-                    task.spawn(knobJelly)
+                    startHoverJelly()
                 end
             end)
+
             hit.InputEnded:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.Touch then
                     task.delay(0.12, function()
-                        hovering = false
-                        visual(true)
+                        if hovering then
+                            hovering = false
+                            endHover()
+                        end
                     end)
                 end
             end)
+
             hit.Activated:Connect(function()
                 mode = not mode
-                visual(true)
+
+                -- Track colour changed, therefore the next liquid snapshot is
+                -- genuinely dirty. Nothing is recomputed until it is visible.
+                knobGlassCtl:MarkDirty()
+                setTrack(true)
+
+                if hovering then
+                    task.delay(0.20, function()
+                        if hovering then
+                            knobGlassCtl:Refresh(function(ok)
+                                if ok and hovering then showLiquidBall() end
+                            end)
+                        end
+                    end)
+                end
+
                 if callback then callback(mode) end
             end)
-            visual(false)
+
+            setTrack(false)
+            showNormalBall(false)
             return row
         end
 
@@ -1677,13 +2062,15 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
             menu.Parent = menuHolder
             menu.Size = UDim2.fromScale(1, 1)
             menu.BackgroundColor3 = Color3.fromRGB(244, 248, 255)
-            menu.BackgroundTransparency = 0.72
+            menu.BackgroundTransparency = 0.90
             menu.BorderSizePixel = 0
             menu.GroupTransparency = 0
             menu.ZIndex = 981
             menu.ClipsDescendants = true
             round(menu, 15)
-            local menuGlass, menuFrost = attachLiquidGlass(menu, "menu", 982, 15, 0.02, 0.84)
+            local menuGlass, menuFrost, menuGlassCtl = attachLiquidGlass(menu, "menu", 982, 15, 1, 1)
+            menuGlassCtl:SetShown(false)
+            menuGlassCtl.HideObject = menuHolder
             stroke(menu, C.Black, 0.84, 0.8)
             addTopHighlight(menu, 24, 986, 0.12)
 
@@ -1729,13 +2116,26 @@ function lib:init(ti, dosplash, visiblekey, deleteprevious)
                 open = state
                 if state then
                     reposition()
-                    menuHolder.Visible = true
-                    menu.GroupTransparency = 1
-                    menu.Position = UDim2.fromOffset(0, -5)
-                    tw(menu, TweenInfo.new(0.17, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-                        GroupTransparency = 0,
-                        Position = UDim2.fromOffset(0, 0),
-                    })
+
+                    -- Capture while the menu is still hidden. If its rectangle
+                    -- is unchanged from last time, Refresh() reuses the frozen
+                    -- result and does not take another screenshot.
+                    menuHolder.Visible = false
+                    menuGlassCtl:Refresh(function(ok)
+                        if not open or not menu.Parent then return end
+                        if ok then
+                            menuGlassCtl:SetShown(true, 0.03, 0.92)
+                        end
+
+                        menuHolder.Visible = true
+                        menu.GroupTransparency = 1
+                        menu.Position = UDim2.fromOffset(0, -5)
+                        tw(menu, TweenInfo.new(0.17, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                            GroupTransparency = 0,
+                            Position = UDim2.fromOffset(0, 0),
+                        })
+                    end)
+
                     tw(chevron, TweenInfo.new(0.18), {Rotation = 180})
                 else
                     tw(chevron, TweenInfo.new(0.18), {Rotation = 0})
