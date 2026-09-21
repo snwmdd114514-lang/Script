@@ -6,7 +6,7 @@
     Repository-ready single-file library build.
     It uses the pinned previous AppleGUI commit as its immutable base,
     removes the EditableImage/screenshot liquid-glass system in memory,
-    adds configurable transparent/frosted surfaces, Slider API, GUI settings, theme/config support, rounded shadow clipping, and functional search, then returns the library.
+    adds configurable transparent/frosted surfaces, Slider API, GUI settings, theme/config support, improved dark mode, and functional search, then returns the library.
 
     New surface style:
         { Transparency = 0.35, Frost = 0.80 }
@@ -83,15 +83,35 @@ local scriptStartedAt = os.clock()
 local scriptStartedText = os.date("%H:%M:%S")
 
 local DEFAULT_GUI_CONFIG = {
+    -- 内置 GUI设置 分类
     ShowGUISettings = true,
-    SidebarTranslucent = true,
+
+    -- 主题
     Theme = "Light",
+
+    -- 全局透明 / 磨砂
     TransparencyEnabled = true,
     FrostEnabled = true,
+    FrostStrength = 1.00,
+
+    -- 左侧分类栏
+    SidebarTranslucent = true,
+    SidebarTransparency = 0.22,
+
+    -- 主窗口
     WindowTransparent = false,
+    WindowTransparency = 0.08,
+    ContentTransparency = 0.10,
+
+    -- 下拉菜单默认保持不透明
     DropdownTransparent = false,
+    DropdownTransparency = 0.34,
+    DropdownFrost = 0.86,
+
+    -- 灵动岛
     ShowDynamicIsland = true,
 
+    -- 配置文件
     ConfigPath = "AppleGUI/config.json",
     UseConfigFile = true,
     AutoSaveConfig = true,
@@ -301,87 +321,31 @@ source = plainReplace(
     "init config argument"
 )
 
-----------------------------------------------------------------
--- Rounded shadow clipping
-----------------------------------------------------------------
 
-source = replaceBetween(
+source = plainReplace(
     source,
-    [[local function addShadow(parent, z, extraX, extraY, transparency, tight)]],
-    [[local function addTopHighlight(parent, inset, z, transparency)]],
-    [[local function addShadow(parent, z, extraX, extraY, transparency, tight)
-    extraX = extraX or 38
-    extraY = extraY or 38
+    [[    Black = Color3.fromRGB(0, 0, 0),
+}]],
+    [[    Black = Color3.fromRGB(0, 0, 0),
 
-    local shadow = Instance.new("ImageLabel")
-    shadow.Name = "ShadowImage"
-    shadow.Parent = parent
-    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-    shadow.Position = UDim2.fromScale(0.5, 0.5)
-    shadow.Size = UDim2.new(1, extraX, 1, extraY)
-    shadow.BackgroundTransparency = 1
-    shadow.Image = tight and ASSET.ShadowTight or ASSET.ShadowSoft
-    shadow.ImageColor3 = C.Black
-    shadow.ImageTransparency = transparency or 0.82
-    shadow.ScaleType = Enum.ScaleType.Slice
-    shadow.SliceCenter =
-        tight
-        and Rect.new(10, 10, 118, 118)
-        or Rect.new(47, 47, 450, 450)
-    shadow.ZIndex = z or 0
-
-    -- Clip the image itself to a rounded outline so the square texture corners
-    -- do not stick out from rounded GUI panels.
-    local shadowCorner = Instance.new("UICorner")
-    local parentCorner =
-        parent:FindFirstChildOfClass("UICorner")
-
-    if tight then
-        shadowCorner.CornerRadius =
-            UDim.new(1, 0)
-    elseif parentCorner then
-        local radius =
-            parentCorner.CornerRadius
-
-        if radius.Scale > 0 then
-            shadowCorner.CornerRadius =
-                UDim.new(1, 0)
-        else
-            shadowCorner.CornerRadius =
-                UDim.new(
-                    0,
-                    math.max(
-                        10,
-                        radius.Offset
-                        + math.floor(
-                            math.max(extraX, extraY)
-                            * 0.18
-                        )
-                    )
-                )
-        end
-    else
-        shadowCorner.CornerRadius =
-            UDim.new(
-                0,
-                math.max(
-                    16,
-                    math.floor(
-                        math.max(extraX, extraY)
-                        * 0.48
-                    )
-                )
-            )
-    end
-
-    shadowCorner.Parent = shadow
-    return shadow
-end
-
-]],
-    "rounded shadow"
+    -- Theme-aware colors used by navigation / specular highlights.
+    Highlight = Color3.fromRGB(255, 255, 255),
+    NavButton = Color3.fromRGB(255, 255, 255),
+    NavIcon = Color3.fromRGB(175, 175, 179),
+}]],
+    "theme color keys"
 )
 
+source = plainReplace(
+    source,
+    [[    h.BackgroundColor3 = C.White]],
+    [[    h.BackgroundColor3 = C.Highlight]],
+    "theme-aware top highlight"
+)
+
+----------------------------------------------------------------
+-- Replace entire liquid glass engine
+----------------------------------------------------------------
 ----------------------------------------------------------------
 -- Replace entire liquid glass engine
 ----------------------------------------------------------------
@@ -459,7 +423,7 @@ local frostEngine = [[    ------------------------------------------------------
         highlight.AnchorPoint = Vector2.new(0.5, 0)
         highlight.Position = UDim2.new(0.5, 0, 0, 1)
         highlight.Size = UDim2.new(1, -18, 0, 1)
-        highlight.BackgroundColor3 = C.White
+        highlight.BackgroundColor3 = C.Highlight
         highlight.BorderSizePixel = 0
         highlight.Active = false
         highlight.ZIndex = (z or obj.ZIndex) + 1
@@ -485,9 +449,17 @@ local frostEngine = [[    ------------------------------------------------------
                 and transparency
                 or 0
 
+            local globalFrostStrength =
+                math.clamp(
+                    tonumber(appConfig.FrostStrength)
+                    or 1,
+                    0,
+                    1
+                )
+
             local effectiveFrost =
                 appConfig.FrostEnabled ~= false
-                and frost
+                and frost * globalFrostStrength
                 or 0
 
             obj.BackgroundTransparency =
@@ -633,6 +605,10 @@ source = plainReplace(
         Divider = Color3.fromRGB(216, 216, 219),
         Blue = Color3.fromRGB(10, 122, 255),
         SwitchOff = Color3.fromRGB(206, 206, 211),
+
+        Highlight = Color3.fromRGB(255, 255, 255),
+        NavButton = Color3.fromRGB(255, 255, 255),
+        NavIcon = Color3.fromRGB(175, 175, 179),
     }
 
     local DARK_THEME = {
@@ -648,6 +624,13 @@ source = plainReplace(
         Divider = Color3.fromRGB(72, 72, 74),
         Blue = Color3.fromRGB(10, 132, 255),
         SwitchOff = Color3.fromRGB(99, 99, 102),
+
+        -- 深色模式下顶部高光不再是一条刺眼白杠。
+        Highlight = Color3.fromRGB(103, 103, 108),
+
+        -- < > 返回 / 前进按钮
+        NavButton = Color3.fromRGB(54, 54, 57),
+        NavIcon = Color3.fromRGB(210, 210, 215),
     }
 
     local function colorClose(a, b)
@@ -813,27 +796,57 @@ source = plainReplace(
             transparencyEnabled
             and appConfig.SidebarTranslucent ~= false
 
+        local sidebarAlpha =
+            math.clamp(
+                tonumber(appConfig.SidebarTransparency)
+                or 0.22,
+                0,
+                0.85
+            )
+
         leftPane.BackgroundTransparency =
-            sidebarTranslucent and 0.22 or 0
+            sidebarTranslucent
+            and sidebarAlpha
+            or 0
 
         local windowTransparent =
             transparencyEnabled
             and appConfig.WindowTransparent == true
 
-        -- When only the sidebar is translucent, the content pane stays opaque
-        -- while the shell underneath the sidebar is opened slightly so the
-        -- game can actually show through that side.
+        local windowAlpha =
+            math.clamp(
+                tonumber(appConfig.WindowTransparency)
+                or 0.08,
+                0,
+                0.65
+            )
+
+        local contentAlpha =
+            math.clamp(
+                tonumber(appConfig.ContentTransparency)
+                or 0.10,
+                0,
+                0.65
+            )
+
+        -- 分类栏单独半透明时，主背景只打开一小部分，
+        -- 让左侧能真正透出游戏画面，同时右侧仍保持清晰。
         main.BackgroundTransparency =
             windowTransparent
-            and 0.08
+            and windowAlpha
             or (
                 sidebarTranslucent
-                and 0.18
+                and math.min(
+                    0.32,
+                    sidebarAlpha * 0.82
+                )
                 or 0
             )
 
         contentPane.BackgroundTransparency =
-            windowTransparent and 0.10 or 0
+            windowTransparent
+            and contentAlpha
+            or 0
 
         island.Visible =
             appConfig.ShowDynamicIsland ~= false
@@ -888,21 +901,15 @@ source = plainReplace(
 source = plainReplace(
     source,
     [[        b.BackgroundColor3 = Color3.fromRGB(255, 255, 255)]],
-    [[        b.BackgroundColor3 =
-            appConfig.Theme == "Dark"
-            and Color3.fromRGB(58, 58, 60)
-            or Color3.fromRGB(255, 255, 255)]],
-    "dark nav button"
+    [[        b.BackgroundColor3 = C.NavButton]],
+    "theme nav button"
 )
 
 source = plainReplace(
     source,
     [[        b.ImageColor3 = Color3.fromRGB(175, 175, 179)]],
-    [[        b.ImageColor3 =
-            appConfig.Theme == "Dark"
-            and Color3.fromRGB(205, 205, 210)
-            or Color3.fromRGB(175, 175, 179)]],
-    "dark nav icon"
+    [[        b.ImageColor3 = C.NavIcon]],
+    "theme nav icon"
 )
 
 ----------------------------------------------------------------
@@ -951,7 +958,7 @@ source = plainReplace(
 
     accountHit.MouseEnter:Connect(function()
         tw(account, TweenInfo.new(0.12), {
-            BackgroundColor3 = Color3.fromRGB(235, 235, 238),
+            BackgroundColor3 = C.CardPressed,
             BackgroundTransparency = 0.36,
         })
     end)
@@ -3003,16 +3010,36 @@ local dropdownReplacement = [[        function sec:Slider(text, minValue, maxVal
 
             local function refreshDropdownConfig()
                 if appConfig.DropdownTransparent == true then
+                    local dropdownAlpha =
+                        math.clamp(
+                            tonumber(
+                                appConfig.DropdownTransparency
+                            )
+                            or 0.34,
+                            0,
+                            0.85
+                        )
+
+                    local dropdownFrost =
+                        math.clamp(
+                            tonumber(
+                                appConfig.DropdownFrost
+                            )
+                            or 0.86,
+                            0,
+                            1
+                        )
+
                     triggerFrostCtl:Set(
                         styleNumber(
                             triggerStyle,
                             "Transparency",
-                            0.10
+                            dropdownAlpha * 0.35
                         ),
                         styleNumber(
                             triggerStyle,
                             "Frost",
-                            0.26
+                            dropdownFrost * 0.42
                         )
                     )
 
@@ -3020,12 +3047,12 @@ local dropdownReplacement = [[        function sec:Slider(text, minValue, maxVal
                         styleNumber(
                             popupStyle,
                             "Transparency",
-                            0.34
+                            dropdownAlpha
                         ),
                         styleNumber(
                             popupStyle,
                             "Frost",
-                            0.86
+                            dropdownFrost
                         )
                     )
                 else
@@ -3280,7 +3307,7 @@ local guiSettingsPageCode = [[    ----------------------------------------------
 
         guiSettingsPage = window:Section("GUI设置", {
             Icon = ASSET.Settings,
-            Subtitle = "界面外观、透明度与配置",
+            Subtitle = "主题、透明度、磨砂与配置",
             ShowInSidebar = appConfig.ShowGUISettings ~= false,
             Expanded = true,
             Style = {
@@ -3304,8 +3331,8 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             rec.sidebarVisible
 
         guiSettingsPage:Label(
-            "这里是 AppleGUI 内置设置。"
-            .. "如果执行器支持 readfile/writefile，设置会使用配置文件保存。",
+            "AppleGUI 内置设置。执行器支持 readfile/writefile 时可读取和保存配置；"
+            .. "未检测到配置文件时自动使用默认值。",
             {
                 Transparency = 0.10,
                 Frost = 0.26,
@@ -3323,6 +3350,10 @@ local guiSettingsPageCode = [[    ----------------------------------------------
                 Frost = 0.24,
             }
         )
+
+        ------------------------------------------------------------
+        -- 主题
+        ------------------------------------------------------------
 
         guiSettingsPage:Divider("主题")
 
@@ -3345,7 +3376,11 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
-        guiSettingsPage:Divider("透明与磨砂")
+        ------------------------------------------------------------
+        -- 分类栏
+        ------------------------------------------------------------
+
+        guiSettingsPage:Divider("分类栏")
 
         guiSettingsPage:Switch(
             "分类栏半透明",
@@ -3358,23 +3393,48 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
+        guiSettingsPage:Slider(
+            "分类栏透明度",
+            0,
+            70,
+            math.floor(
+                (
+                    tonumber(
+                        appConfig.SidebarTransparency
+                    )
+                    or 0.22
+                )
+                * 100
+                + 0.5
+            ),
+            function(value)
+                -- 拖动 Slider 时不连续写配置文件。
+                window:SetConfig(
+                    "SidebarTransparency",
+                    value / 100,
+                    true
+                )
+            end,
+            {
+                Step = 1,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = "%",
+            }
+        )
+
+        ------------------------------------------------------------
+        -- 全局透明度
+        ------------------------------------------------------------
+
+        guiSettingsPage:Divider("透明")
+
         guiSettingsPage:Switch(
             "开启透明效果",
             appConfig.TransparencyEnabled ~= false,
             function(value)
                 window:SetConfig(
                     "TransparencyEnabled",
-                    value
-                )
-            end
-        )
-
-        guiSettingsPage:Switch(
-            "开启磨砂效果",
-            appConfig.FrostEnabled ~= false,
-            function(value)
-                window:SetConfig(
-                    "FrostEnabled",
                     value
                 )
             end
@@ -3391,6 +3451,116 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
+        guiSettingsPage:Slider(
+            "窗口透明度",
+            0,
+            55,
+            math.floor(
+                (
+                    tonumber(
+                        appConfig.WindowTransparency
+                    )
+                    or 0.08
+                )
+                * 100
+                + 0.5
+            ),
+            function(value)
+                window:SetConfig(
+                    "WindowTransparency",
+                    value / 100,
+                    true
+                )
+            end,
+            {
+                Step = 1,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = "%",
+            }
+        )
+
+        guiSettingsPage:Slider(
+            "内容区域透明度",
+            0,
+            55,
+            math.floor(
+                (
+                    tonumber(
+                        appConfig.ContentTransparency
+                    )
+                    or 0.10
+                )
+                * 100
+                + 0.5
+            ),
+            function(value)
+                window:SetConfig(
+                    "ContentTransparency",
+                    value / 100,
+                    true
+                )
+            end,
+            {
+                Step = 1,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = "%",
+            }
+        )
+
+        ------------------------------------------------------------
+        -- 磨砂
+        ------------------------------------------------------------
+
+        guiSettingsPage:Divider("磨砂")
+
+        guiSettingsPage:Switch(
+            "开启磨砂效果",
+            appConfig.FrostEnabled ~= false,
+            function(value)
+                window:SetConfig(
+                    "FrostEnabled",
+                    value
+                )
+            end
+        )
+
+        guiSettingsPage:Slider(
+            "全局磨砂强度",
+            0,
+            100,
+            math.floor(
+                (
+                    tonumber(
+                        appConfig.FrostStrength
+                    )
+                    or 1
+                )
+                * 100
+                + 0.5
+            ),
+            function(value)
+                window:SetConfig(
+                    "FrostStrength",
+                    value / 100,
+                    true
+                )
+            end,
+            {
+                Step = 1,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = "%",
+            }
+        )
+
+        ------------------------------------------------------------
+        -- 下拉菜单
+        ------------------------------------------------------------
+
+        guiSettingsPage:Divider("下拉菜单")
+
         guiSettingsPage:Switch(
             "下拉菜单透明",
             appConfig.DropdownTransparent == true,
@@ -3402,6 +3572,68 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             end
         )
 
+        guiSettingsPage:Slider(
+            "下拉菜单透明度",
+            0,
+            75,
+            math.floor(
+                (
+                    tonumber(
+                        appConfig.DropdownTransparency
+                    )
+                    or 0.34
+                )
+                * 100
+                + 0.5
+            ),
+            function(value)
+                window:SetConfig(
+                    "DropdownTransparency",
+                    value / 100,
+                    true
+                )
+            end,
+            {
+                Step = 1,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = "%",
+            }
+        )
+
+        guiSettingsPage:Slider(
+            "下拉菜单磨砂强度",
+            0,
+            100,
+            math.floor(
+                (
+                    tonumber(
+                        appConfig.DropdownFrost
+                    )
+                    or 0.86
+                )
+                * 100
+                + 0.5
+            ),
+            function(value)
+                window:SetConfig(
+                    "DropdownFrost",
+                    value / 100,
+                    true
+                )
+            end,
+            {
+                Step = 1,
+                ShowSteps = false,
+                ShowValue = true,
+                Suffix = "%",
+            }
+        )
+
+        ------------------------------------------------------------
+        -- 其他
+        ------------------------------------------------------------
+
         guiSettingsPage:Divider("其他")
 
         guiSettingsPage:Switch(
@@ -3410,6 +3642,17 @@ local guiSettingsPageCode = [[    ----------------------------------------------
             function(value)
                 window:SetConfig(
                     "ShowDynamicIsland",
+                    value
+                )
+            end
+        )
+
+        guiSettingsPage:Switch(
+            "自动保存配置",
+            appConfig.AutoSaveConfig ~= false,
+            function(value)
+                window:SetConfig(
+                    "AutoSaveConfig",
                     value
                 )
             end
@@ -3431,7 +3674,17 @@ local guiSettingsPageCode = [[    ----------------------------------------------
         )
 
         guiSettingsPage:Label(
-            "作者也可以在 init() 的第 5 个参数直接传入配置表；"
+            "Slider 调整透明度/磨砂时只实时应用，不会在拖动过程中连续写磁盘；"
+            .. "调整完成后可以点击「保存当前 GUI 配置」。",
+            {
+                Transparency = 0.12,
+                Frost = 0.28,
+            }
+        )
+
+        guiSettingsPage:Label(
+            "脚本作者也可以在 init() 的第 5 个参数传入配置表，"
+            .. "例如 Theme、SidebarTransparency、DropdownTransparent 等；"
             .. "显式参数优先级高于配置文件。",
             {
                 Transparency = 0.12,
@@ -3442,6 +3695,9 @@ local guiSettingsPageCode = [[    ----------------------------------------------
 
 ]]
 
+----------------------------------------------------------------
+-- Built-in account page
+----------------------------------------------------------------
 ----------------------------------------------------------------
 -- Built-in account page
 ----------------------------------------------------------------
