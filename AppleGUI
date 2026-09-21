@@ -1,33 +1,4 @@
---[[
-    AppleGUI Frosted Repository Build
-    Source:
-    https://raw.githubusercontent.com/snwmdd114514-lang/Script/refs/heads/main/AppleGUI
 
-    Repository-ready single-file library build.
-    It uses the pinned previous AppleGUI commit as its immutable base,
-    removes the EditableImage/screenshot liquid-glass system in memory,
-    adds configurable transparent/frosted surfaces, Slider API, GUI settings, theme/config support, improved dark mode, and functional search, then returns the library.
-
-    New surface style:
-        { Transparency = 0.35, Frost = 0.80 }
-
-    Returned row controls expose live attributes:
-        row:SetAttribute("Transparency", 0.55)
-        row:SetAttribute("Frost", 0.90)
-
-    New collapse API:
-        local controls = settings:Create("Controls", {
-            ShowInSidebar = true,
-            Expanded = false,
-        })
-
-        controls:SetExpanded(true)
-        print(controls:IsExpanded())
-]]
-
--- ================================================================
--- 作者配置区：直接改这里即可
--- ================================================================
 local CONFIG_FOLDER = "AppleGUI"
 local CONFIG_FILE_NAME = "config.json"
 
@@ -65,9 +36,6 @@ if type(source) ~= "string" or #source < 1000 then
     error("[AppleGUI Frost Patch] invalid source")
 end
 
-----------------------------------------------------------------
--- Remove liquid-glass-only services
-----------------------------------------------------------------
 
 source = string.gsub(source, 'local AssetService = game:GetService%("AssetService"%)\n', "")
 source = string.gsub(source, 'local CaptureService = game:GetService%("CaptureService"%)\n', "")
@@ -449,12 +417,6 @@ source = plainReplace(
     "theme-aware top highlight"
 )
 
-----------------------------------------------------------------
--- Replace entire liquid glass engine
-----------------------------------------------------------------
-----------------------------------------------------------------
--- Replace entire liquid glass engine
-----------------------------------------------------------------
 
 local frostEngine = [[    ------------------------------------------------------------------------
     -- Lightweight frosted-glass surfaces
@@ -682,9 +644,6 @@ source = replaceBetween(
     "liquid engine"
 )
 
-----------------------------------------------------------------
--- Configurable Dynamic Island
-----------------------------------------------------------------
 
 source = replaceBetween(
     source,
@@ -695,6 +654,25 @@ source = replaceBetween(
     [[    ------------------------------------------------------------------------
     -- Dynamic Island launcher
     ------------------------------------------------------------------------
+    local islandShadowHolder = Instance.new("Frame")
+    islandShadowHolder.Name = "DynamicIslandShadow"
+    islandShadowHolder.Parent = scrgui
+    islandShadowHolder.AnchorPoint = Vector2.new(0.5, 0)
+    islandShadowHolder.Position = UDim2.new(0.5, 0, 0, 10)
+    islandShadowHolder.Size = UDim2.fromOffset(196, 36)
+    islandShadowHolder.BackgroundTransparency = 1
+    islandShadowHolder.BorderSizePixel = 0
+    islandShadowHolder.ZIndex = 898
+
+    local islandShadow = addShadow(
+        islandShadowHolder,
+        898,
+        24,
+        18,
+        0.80,
+        true
+    )
+
     local island = Instance.new("Frame")
     island.Name = "DynamicIsland"
     island.Parent = scrgui
@@ -792,6 +770,12 @@ source = replaceBetween(
                 height
             )
 
+        islandShadowHolder.Size =
+            UDim2.fromOffset(
+                width,
+                height
+            )
+
         islandIcon.Visible =
             appConfig.IslandShowIcon ~= false
 
@@ -874,6 +858,12 @@ source = replaceBetween(
     local fpsConnection =
         RunService.RenderStepped:Connect(
             function(dt)
+                if not island.Visible then
+                    fpsFrames = 0
+                    fpsElapsed = 0
+                    return
+                end
+
                 fpsFrames += 1
                 fpsElapsed += dt
 
@@ -915,6 +905,12 @@ source = replaceBetween(
         local baseH =
             island.Size.Y.Offset
 
+        local growSize =
+            UDim2.fromOffset(
+                math.floor(baseW * 1.055 + 0.5),
+                math.floor(baseH * 1.075 + 0.5)
+            )
+
         local t1 = tw(
             island,
             TweenInfo.new(
@@ -922,16 +918,26 @@ source = replaceBetween(
                 Enum.EasingStyle.Quad,
                 Enum.EasingDirection.Out
             ),
-            {
-                Size =
-                    UDim2.fromOffset(
-                        math.floor(baseW * 1.055 + 0.5),
-                        math.floor(baseH * 1.075 + 0.5)
-                    )
-            }
+            {Size = growSize}
+        )
+
+        tw(
+            islandShadowHolder,
+            TweenInfo.new(
+                0.075,
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.Out
+            ),
+            {Size = growSize}
         )
 
         t1.Completed:Wait()
+
+        local squashSize =
+            UDim2.fromOffset(
+                math.floor(baseW * 0.985 + 0.5),
+                math.floor(baseH * 0.97 + 0.5)
+            )
 
         local t2 = tw(
             island,
@@ -940,16 +946,26 @@ source = replaceBetween(
                 Enum.EasingStyle.Quad,
                 Enum.EasingDirection.InOut
             ),
-            {
-                Size =
-                    UDim2.fromOffset(
-                        math.floor(baseW * 0.985 + 0.5),
-                        math.floor(baseH * 0.97 + 0.5)
-                    )
-            }
+            {Size = squashSize}
+        )
+
+        tw(
+            islandShadowHolder,
+            TweenInfo.new(
+                0.085,
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.InOut
+            ),
+            {Size = squashSize}
         )
 
         t2.Completed:Wait()
+
+        local baseSize =
+            UDim2.fromOffset(
+                baseW,
+                baseH
+            )
 
         local t3 = tw(
             island,
@@ -958,13 +974,17 @@ source = replaceBetween(
                 Enum.EasingStyle.Back,
                 Enum.EasingDirection.Out
             ),
-            {
-                Size =
-                    UDim2.fromOffset(
-                        baseW,
-                        baseH
-                    )
-            }
+            {Size = baseSize}
+        )
+
+        tw(
+            islandShadowHolder,
+            TweenInfo.new(
+                0.22,
+                Enum.EasingStyle.Back,
+                Enum.EasingDirection.Out
+            ),
+            {Size = baseSize}
         )
 
         t3.Completed:Wait()
@@ -977,9 +997,6 @@ source = replaceBetween(
     "configurable Dynamic Island"
 )
 
-----------------------------------------------------------------
--- Independent width / height resize handle
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -1256,12 +1273,6 @@ source = plainReplace(
     "independent resize handle"
 )
 
-----------------------------------------------------------------
--- Runtime GUI configuration / themes
-----------------------------------------------------------------
-----------------------------------------------------------------
--- Runtime GUI configuration / themes
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -1531,8 +1542,11 @@ source = plainReplace(
             and contentAlpha
             or 0
 
-        island.Visible =
+        local islandShown =
             appConfig.ShowDynamicIsland ~= false
+
+        island.Visible = islandShown
+        islandShadowHolder.Visible = islandShown
 
         for _, refresh in ipairs(frostRefreshers) do
             pcall(refresh)
@@ -1595,9 +1609,6 @@ source = plainReplace(
     "theme nav icon"
 )
 
-----------------------------------------------------------------
--- Account row: real username + click target
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -1669,9 +1680,6 @@ source = plainReplace(
     "account click"
 )
 
-----------------------------------------------------------------
--- Window animation
-----------------------------------------------------------------
 
 source = replaceBetween(
     source,
@@ -1691,6 +1699,10 @@ source = replaceBetween(
         )
 
     local animating = false
+    local minimizedState = not visible
+    local closingState = false
+    local closingCallbacks = {}
+    local zoomed = false
 
     local function showWindow()
         if animating or shell.Visible then
@@ -1698,6 +1710,7 @@ source = replaceBetween(
         end
 
         animating = true
+        minimizedState = false
         shell.Visible = true
         main.GroupTransparency = 0.18
         windowScale.Scale = 0.965
@@ -1774,6 +1787,7 @@ source = replaceBetween(
         end
 
         animating = true
+        minimizedState = true
 
         tw(
             main,
@@ -1840,9 +1854,75 @@ source = replaceBetween(
     "window animation"
 )
 
-----------------------------------------------------------------
--- Green traffic light always supports fullscreen
-----------------------------------------------------------------
+source = plainReplace(
+    source,
+    [[    islandButton.Activated:Connect(function()
+        task.spawn(islandJelly)
+        if not shell.Visible then
+            visible = true
+            showWindow()
+        else
+            -- Desktop users can also use the island as a compact toggle.
+            visible = false
+            hideWindow()
+        end
+    end)
+
+    minimize.Activated:Connect(function()
+        visible = false
+        hideWindow()
+    end)
+
+    close.Activated:Connect(function()
+        if fpsConnection then fpsConnection:Disconnect() end
+        scrgui:Destroy()
+    end)]],
+    [[    islandButton.Activated:Connect(function()
+        task.spawn(islandJelly)
+
+        if not shell.Visible then
+            visible = true
+            showWindow()
+        else
+            visible = false
+            hideWindow()
+        end
+    end)
+
+    minimize.Activated:Connect(function()
+        visible = false
+        hideWindow()
+    end)
+
+    close.Activated:Connect(function()
+        if closingState then
+            return
+        end
+
+        closingState = true
+
+        for _, entry in ipairs(closingCallbacks) do
+            if entry.Connected then
+                task.spawn(function()
+                    pcall(
+                        entry.Callback,
+                        window:GetUIState()
+                    )
+                end)
+            end
+        end
+
+        task.defer(function()
+            if fpsConnection then
+                fpsConnection:Disconnect()
+            end
+
+            scrgui:Destroy()
+        end)
+    end)]],
+    "window state handlers"
+)
+
 
 source = replaceBetween(
     source,
@@ -1854,7 +1934,6 @@ source = replaceBetween(
         greenCallback = callback
     end
 
-    local zoomed = false
     local savedSize
     local savedPosition
 
@@ -1868,6 +1947,7 @@ source = replaceBetween(
         end
 
         if not zoomed then
+            zoomed = true
             savedSize = shell.Size
             savedPosition = shell.Position
             fullscreenSizeOverride = true
@@ -1909,6 +1989,7 @@ source = replaceBetween(
 
             resizeGrip.Visible = false
         else
+            zoomed = false
             fullscreenSizeOverride = false
 
             tw(
@@ -1928,19 +2009,12 @@ source = replaceBetween(
                 appConfig.ShowResizeHandle ~= false
         end
 
-        zoomed = not zoomed
     end)
 
 ]],
     "green fullscreen"
 )
 
-----------------------------------------------------------------
--- Public window configuration API
-----------------------------------------------------------------
-----------------------------------------------------------------
--- Public window configuration API
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -1949,6 +2023,46 @@ source = plainReplace(
     function window:ToggleVisible()]],
     [[    local window = {}
     window.Config = appConfig
+
+    function window:IsMinimized()
+        return minimizedState == true
+    end
+
+    function window:IsClosing()
+        return closingState == true
+    end
+
+    function window:IsFullscreen()
+        return zoomed == true
+    end
+
+    function window:GetUIState()
+        return {
+            Minimized = minimizedState == true,
+            Closing = closingState == true,
+            Fullscreen = zoomed == true,
+            Visible = shell.Visible == true,
+        }
+    end
+
+    function window:OnClosing(callback)
+        if type(callback) ~= "function" then
+            return nil
+        end
+
+        local entry = {
+            Callback = callback,
+            Connected = true,
+        }
+
+        table.insert(closingCallbacks, entry)
+
+        return {
+            Disconnect = function()
+                entry.Connected = false
+            end,
+        }
+    end
 
     function window:GetConfig()
         return cloneTable(appConfig)
@@ -2108,9 +2222,6 @@ source = plainReplace(
     "window config API"
 )
 
-----------------------------------------------------------------
--- Search categories AND functions
-----------------------------------------------------------------
 
 source = replaceBetween(
     source,
@@ -2251,9 +2362,6 @@ source = plainReplace(
     "search placeholder"
 )
 
-----------------------------------------------------------------
--- Modal / notification frosted surfaces
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -2410,9 +2518,6 @@ source = replaceBetween(
     "toast capture"
 )
 
-----------------------------------------------------------------
--- Section options + collapse defaults
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -2630,9 +2735,6 @@ source = plainReplace(
     "first visible section"
 )
 
-----------------------------------------------------------------
--- Every row/control can carry its own Transparency/Frost
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -2694,9 +2796,6 @@ source = plainReplace(
     "label style"
 )
 
-----------------------------------------------------------------
--- Replace Switch
-----------------------------------------------------------------
 
 local switchReplacement = [[        function sec:Switch(text, defaultmode, callback, style)
             registerSearchText(text)
@@ -2989,9 +3088,6 @@ source = replaceBetween(
     "Switch"
 )
 
-----------------------------------------------------------------
--- Replace Dropdown
-----------------------------------------------------------------
 
 local dropdownReplacement = [[        function sec:Slider(text, minValue, maxValue, defaultValue, callback, options)
             registerSearchText(text)
@@ -4290,9 +4386,6 @@ source = replaceBetween(
     "Dropdown"
 )
 
-----------------------------------------------------------------
--- TextField styling
-----------------------------------------------------------------
 
 source = plainReplace(
     source,
@@ -4327,9 +4420,6 @@ source = plainReplace(
     "TextField frost"
 )
 
-----------------------------------------------------------------
--- Built-in GUI settings page
-----------------------------------------------------------------
 
 local guiSettingsPageCode = [[    ------------------------------------------------------------------------
     -- Built-in GUI settings page
@@ -4980,12 +5070,6 @@ local guiSettingsPageCode = [[    ----------------------------------------------
 
 ]]
 
-----------------------------------------------------------------
--- Built-in account page
-----------------------------------------------------------------
-----------------------------------------------------------------
--- Built-in account page
-----------------------------------------------------------------
 
 local accountPageCode = [[    ------------------------------------------------------------------------
     -- Built-in player account page
@@ -5251,9 +5335,6 @@ source = plainReplace(
     "account page"
 )
 
-----------------------------------------------------------------
--- Safety check
-----------------------------------------------------------------
 
 if not string.find(source, "function sec:Slider", 1, true) then
     error("[AppleGUI Frost Patch] Slider API patch missing")
@@ -5262,6 +5343,10 @@ end
 for _, expected in ipairs({
     "function window:SetConfig",
     "function window:GetConfig",
+    "function window:IsMinimized",
+    "function window:IsClosing",
+    "function window:IsFullscreen",
+    "function window:GetUIState",
     "GUI设置",
     "搜索分类和功能",
     "registerSearchText",
@@ -5291,9 +5376,6 @@ for _, token in ipairs({
     end
 end
 
-----------------------------------------------------------------
--- Author-level config folder substitution
-----------------------------------------------------------------
 
 source =
     string.gsub(
@@ -5313,9 +5395,29 @@ source =
         end
     )
 
-----------------------------------------------------------------
--- Compile patched library
-----------------------------------------------------------------
+local function stripGeneratedComments(text)
+    text = string.gsub(
+        text,
+        "%-%-%[%[.-%]%]",
+        ""
+    )
+
+    text = string.gsub(
+        text,
+        "^%s*%-%-[^\n]*\n",
+        ""
+    )
+
+    text = string.gsub(
+        text,
+        "\n%s*%-%-[^\n]*",
+        "\n"
+    )
+
+    return text
+end
+
+source = stripGeneratedComments(source)
 
 local chunk, compileErr = loadstring(source)
 
@@ -5334,7 +5436,5 @@ if not okLib then
         .. tostring(AppleGUI)
     )
 end
-
-print("[AppleGUI Frost Patch] patched library loaded")
 
 return AppleGUI
