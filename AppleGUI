@@ -1907,7 +1907,7 @@ source = replaceBetween(
         zoomed = not zoomed
     end)
 
-    if visiblekey then]],
+]],
     "green fullscreen"
 )
 
